@@ -25,4 +25,4 @@ jobs:
           aws codebuild start-build \
             --project-name kaizen-poc \
             --source-version ${{ github.sha }} \
-            --buildspec-override buildspec-stage1.yml
+            --buildspec-override buildspec-stage2.yml
