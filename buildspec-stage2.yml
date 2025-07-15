@@ -2,17 +2,16 @@ version: 0.2
 phases:
   install:
     commands:
-      # Grab the Kaizen CLI binary
       - echo "▶ Downloading Kaizen CLI"
       - aws s3 cp s3://navyadha-multi-lora-trn2/kaizen ./kaizen
       - chmod +x ./kaizen
 
   build:
     commands:
-      - echo "▶ Stage 2 — launch Kaizen smoke workload"
-      - ./kaizen start-workload \
-          --command "/bin/sh -c 'while true; do echo $(date); sleep 2; done'" \
+      - |
+        ./kaizen start-workload \
           --image 763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-inference-neuronx:2.1.2-neuronx-py310-sdk2.20.2-ubuntu20.04 \
           --instanceType trn1.32xlarge \
           --nodeCount 1 \
+          --command "/bin/sh -c 'while true; do date; sleep 2; done'" \
           --tail-logs
