@@ -1,33 +1,34 @@
 version: 0.2
 
 phases:
+  install:
+    commands:
+      - set -e
+      - echo "▶ Stage 3 — starting build environment"
+
   pre_build:
     commands:
-      - |
-        echo "▶ Stage 3 — login to destination ECR"
-        aws ecr get-login-password --region $AWS_REGION | docker login -u AWS --password-stdin $ECR_REGISTRY
-        echo "Using Neuron base (no vLLM) source-overlay build."
+      - set -e
+      - echo "▶ Stage 3 — login to destination ECR"
+      - aws ecr get-login-password --region $AWS_REGION | docker login -u AWS --password-stdin $ECR_REGISTRY
+      # Normalize tag (fallback = CodeBuild source revision if not overridden)
+      - IMAGE_TAG=${IMAGE_TAG:-$CODEBUILD_RESOLVED_SOURCE_VERSION}
+      - echo "Using IMAGE_TAG=$IMAGE_TAG"
 
   build:
     commands:
-      - |
-        echo "▶ Build overlay image from PR commit"
-        echo "Tag: $CODEBUILD_RESOLVED_SOURCE_VERSION"
-        docker build -f Dockerfile.rebase -t $ECR_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION .
+      - set -e
+      - echo "▶ Build overlay image from commit $IMAGE_TAG"
+      # Dockerfile.rebase already has FROM ...; if you need BASE_IMAGE arg, add --build-arg.
+      - docker build -f Dockerfile.rebase -t $ECR_URI:$IMAGE_TAG .
 
   post_build:
     commands:
-      - |
-        echo "▶ Push overlay image"
-        docker push $ECR_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION
-        echo "IMAGE_URI=$ECR_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION" | tee image-detail.txt
+      - set -e
+      - echo "▶ Push overlay image"
+      - docker push $ECR_URI:$IMAGE_TAG
+      - echo "IMAGE_URI=$ECR_URI:$IMAGE_TAG" | tee image-detail.txt
 
 artifacts:
   files:
     - image-detail.txt
-
-env:
-  variables:
-    AWS_REGION:   us-west-2
-    ECR_REGISTRY: placeholder
-    ECR_URI:      placeholder
