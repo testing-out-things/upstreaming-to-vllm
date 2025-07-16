@@ -4,11 +4,9 @@ phases:
   pre_build:
     commands:
       - |
-        echo "▶ Stage 3 — login to destination ECR"
+        echo "▶ Stage 3 — login to destination ECR (your account)"
         aws ecr get-login-password --region $AWS_REGION | docker login -u AWS --password-stdin $ECR_REGISTRY
-
-        echo "▶ Login to Neuron base ECR (763104351884)"
-        aws ecr get-login-password --region $AWS_REGION | docker login -u AWS --password-stdin 763104351884.dkr.ecr.$AWS_REGION.amazonaws.com
+        echo "Using public Neuron base image: public.ecr.aws/neuron/pytorch-inference-neuronx:2.1.2-neuronx-py310-sdk2.20.2-ubuntu20.04"
 
   build:
     commands:
