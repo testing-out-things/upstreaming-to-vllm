@@ -9,10 +9,12 @@ phases:
 
   build:
     commands:
-      - echo "▶ Kaizen inspect workload"
-      - IMAGE_TAG=$CODEBUILD_RESOLVED_SOURCE_VERSION
-      - ./kaizen start-workload \
-          --image $ECR_URI:$IMAGE_TAG \
+      - |
+        set -e
+        IMAGE_TAG=${IMAGE_TAG:-$CODEBUILD_RESOLVED_SOURCE_VERSION}
+        echo "▶ Launch Kaizen inspect workload with $ECR_URI:$IMAGE_TAG"
+        ./kaizen start-workload \
+          --image "$ECR_URI:$IMAGE_TAG" \
           --instanceType trn1.32xlarge \
           --nodeCount 1 \
           --command "python /workspace/src/ci_inspect.py" \
