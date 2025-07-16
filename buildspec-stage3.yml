@@ -3,29 +3,24 @@ version: 0.2
 phases:
   pre_build:
     commands:
-      - echo "▶ Stage 3 — login to destination ECR"
-      - aws ecr get-login-password --region $AWS_REGION | docker login -u AWS --password-stdin $ECR_REGISTRY
-
-      # Base image (fixed for now; override later when you stand up an internal base publisher)
-      - export BASE_IMAGE=$BASE_IMAGE_DEFAULT
-      - echo "Using BASE_IMAGE=$BASE_IMAGE"
+      - |
+        echo "▶ Stage 3 — login to destination ECR"
+        aws ecr get-login-password --region $AWS_REGION | docker login -u AWS --password-stdin $ECR_REGISTRY
+        echo "Using Neuron base (no vLLM) source-overlay build."
 
   build:
     commands:
-      - echo "▶ Build overlay image from PR commit"
-      - export IMAGE_TAG=$CODEBUILD_RESOLVED_SOURCE_VERSION
-      - docker build \
-          --build-arg BASE_IMAGE=$BASE_IMAGE \
-          -f Dockerfile.rebase \
-          -t $ECR_URI:$IMAGE_TAG \
-          .
+      - |
+        echo "▶ Build overlay image from PR commit"
+        echo "Tag: $CODEBUILD_RESOLVED_SOURCE_VERSION"
+        docker build -f Dockerfile.rebase -t $ECR_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION .
 
   post_build:
     commands:
-      - echo "▶ Push overlay image"
-      - export IMAGE_TAG=$CODEBUILD_RESOLVED_SOURCE_VERSION
-      - docker push $ECR_URI:$IMAGE_TAG
-      - echo "IMAGE_URI=$ECR_URI:$IMAGE_TAG" | tee image-detail.txt
+      - |
+        echo "▶ Push overlay image"
+        docker push $ECR_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION
+        echo "IMAGE_URI=$ECR_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION" | tee image-detail.txt
 
 artifacts:
   files:
@@ -33,7 +28,6 @@ artifacts:
 
 env:
   variables:
-    AWS_REGION:         us-west-2
-    ECR_REGISTRY:       placeholder
-    ECR_URI:            placeholder
-    BASE_IMAGE_DEFAULT: 763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-inference-neuronx:2.1.2-neuronx-py310-sdk2.20.2-ubuntu20.04
+    AWS_REGION:   us-west-2
+    ECR_REGISTRY: placeholder
+    ECR_URI:      placeholder
