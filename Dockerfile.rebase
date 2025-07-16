@@ -1,22 +1,13 @@
-# Extend a Neuron runtime base image passed at build time.
-ARG BASE_IMAGE
-FROM ${BASE_IMAGE}
+FROM 763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-inference-neuronx:2.1.2-neuronx-py310-sdk2.20.2-ubuntu20.04
 
-# Ensure build tooling is up to date.
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Workspace for your PR code.
 WORKDIR /workspace
-
-# Copy the entire repo (CodeBuild passes the PR source as build context).
 COPY . /workspace/src
 
-# Remove any vLLM baked into the base image (ignore error if none present).
 RUN pip uninstall -y vllm || true
 
-# Install THIS commit's vLLM (and any other project packages).
 WORKDIR /workspace/src
 RUN pip install --no-cache-dir -e .
 
-# Placeholder default command (Kaizen can override --command).
 CMD ["python", "examples/offline_inference/neuron.py"]
