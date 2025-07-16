@@ -1,13 +1,12 @@
-FROM public.ecr.aws/neuron/pytorch-inference-neuronx:2.1.2-neuronx-py310-sdk2.20.2-ubuntu20.04
+# Base Neuron runtime (NO vLLM included)
+FROM public.ecr.aws/neuron/pytorch-inference-neuronx:2.7.0-neuronx-py310-sdk2.24.1-ubuntu22.04
 
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-
-WORKDIR /workspace
-COPY . /workspace/src
-
-RUN pip uninstall -y vllm || true
-
+# Copy your repo (PR code)
 WORKDIR /workspace/src
-RUN pip install --no-cache-dir -e .
+COPY . .
 
+# Prepend repo to PYTHONPATH so imports see *this* vLLM code first
+ENV PYTHONPATH=/workspace/src:${PYTHONPATH}
+
+# Default command (will be overridden in Stage 4)
 CMD ["python", "examples/offline_inference/neuron.py"]
