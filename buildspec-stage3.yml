@@ -6,17 +6,16 @@ phases:
       - |
         echo "▶ Stage 3 — login to destination ECR"
         aws ecr get-login-password --region $AWS_REGION | docker login -u AWS --password-stdin $ECR_REGISTRY
-        echo "Using BASE_IMAGE=$BASE_IMAGE_DEFAULT"
+
+        echo "▶ Login to Neuron base ECR (763104351884)"
+        aws ecr get-login-password --region $AWS_REGION | docker login -u AWS --password-stdin 763104351884.dkr.ecr.$AWS_REGION.amazonaws.com
 
   build:
     commands:
       - |
         echo "▶ Build overlay image from PR commit"
         echo "Tag: $CODEBUILD_RESOLVED_SOURCE_VERSION"
-        docker build --build-arg BASE_IMAGE=$BASE_IMAGE_DEFAULT \
-          -f Dockerfile.rebase \
-          -t $ECR_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION \
-          .
+        docker build -f Dockerfile.rebase -t $ECR_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION .
 
   post_build:
     commands:
@@ -31,7 +30,6 @@ artifacts:
 
 env:
   variables:
-    AWS_REGION:         us-west-2
-    ECR_REGISTRY:       placeholder
-    ECR_URI:            placeholder
-    BASE_IMAGE_DEFAULT: 763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-inference-neuronx:2.1.2-neuronx-py310-sdk2.20.2-ubuntu20.04
+    AWS_REGION:   us-west-2
+    ECR_REGISTRY: placeholder
+    ECR_URI:      placeholder
