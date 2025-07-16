@@ -2,7 +2,13 @@ name: Stage-3 (Build vLLM overlay image)
 
 on:
   workflow_dispatch:          # manual run button
-  pull_request:               # auto on PRs; comment out if you want manual-only during bring-up
+  pull_request:               # auto on PRs
+
+# Normalize the image tag across PR + manual runs.
+# If this is a PR, use the PR *head* commit (your code).
+# Otherwise (workflow_dispatch / push), fall back to github.sha.
+env:
+  IMAGE_TAG: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   build:
@@ -24,11 +30,13 @@ jobs:
         id: start_build
         run: |
           set -euo pipefail
+          echo "Stage-3: building image tag $IMAGE_TAG"
           BUILD_ID=$(aws codebuild start-build \
             --project-name kaizen-poc \
-            --source-version ${{ github.sha }} \
+            --source-version ${{ env.IMAGE_TAG }} \
             --buildspec-override buildspec-stage3.yml \
             --environment-variables-override \
+                name=IMAGE_TAG,value=${{ env.IMAGE_TAG }},type=PLAINTEXT \
                 name=AWS_REGION,value=${{ secrets.AWS_REGION }},type=PLAINTEXT \
                 name=ECR_REGISTRY,value=${{ secrets.ECR_REGISTRY }},type=PLAINTEXT \
                 name=ECR_URI,value=${{ secrets.ECR_URI }},type=PLAINTEXT \
@@ -39,27 +47,22 @@ jobs:
 
       - name: Wait for CodeBuild to finish
         env:
-          BUILD_ID: ${{ steps.start_build.outputs.build_id }}
+          BUILD_ID:   ${{ steps.start_build.outputs.build_id }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           set -euo pipefail
           echo "Waiting for CodeBuild build: $BUILD_ID"
-          # Derive a console link for convenience
           ACCOUNT_ID=$(echo "$BUILD_ID" | cut -d: -f5)
           RAW_ID=$(echo "$BUILD_ID" | cut -d: -f7)  # build/<proj>:<uuid>
-          # The console URL wants the full build ID after 'build/'
           CONSOLE_URL="https://${AWS_REGION}.console.aws.amazon.com/codesuite/codebuild/${ACCOUNT_ID}/projects/kaizen-poc/build/${RAW_ID}/?region=${AWS_REGION}"
           echo "Build console: $CONSOLE_URL"
 
-          # Poll until terminal
           while true; do
             STATUS=$(aws codebuild batch-get-builds \
               --ids "$BUILD_ID" \
               --query 'builds[0].buildStatus' \
               --output text)
-
             echo "$(date -u +%FT%TZ) CodeBuild status: $STATUS"
-
             case "$STATUS" in
               SUCCEEDED)
                 echo "CodeBuild build succeeded."
