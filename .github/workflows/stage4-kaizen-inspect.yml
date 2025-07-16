@@ -1,7 +1,11 @@
 name: Stage-4 (Kaizen inspect vLLM overlay)
 
 on:
-  workflow_dispatch:    # manual run only while in PoC
+  workflow_dispatch:    # manual only while in PoC
+
+# Same normalized tag trick as Stage-3.
+env:
+  IMAGE_TAG: ${{ github.event.pull_request.head.sha || github.sha }}
 
 concurrency:
   group: stage4-${{ github.ref }}
@@ -14,8 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Needed to call CodeBuild and pass creds into the build container.
-      # Run only on trusted branches (no forks) because we inject admin creds.
+      # These creds are used to invoke CodeBuild and (passed through) for Kaizen.
+      # Do not run on untrusted forks with admin creds.
       - name: Configure AWS creds
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -28,12 +32,13 @@ jobs:
         id: start_cb
         run: |
           set -euo pipefail
+          echo "Stage-4: Kaizen inspect image tag $IMAGE_TAG"
           BUILD_ID=$(aws codebuild start-build \
             --project-name kaizen-poc \
-            --source-version ${{ github.sha }} \
+            --source-version ${{ env.IMAGE_TAG }} \
             --buildspec-override buildspec-stage4-inspect.yml \
             --environment-variables-override \
-                name=IMAGE_TAG,value=${{ github.sha }},type=PLAINTEXT \
+                name=IMAGE_TAG,value=${{ env.IMAGE_TAG }},type=PLAINTEXT \
                 name=AWS_REGION,value=${{ secrets.AWS_REGION }},type=PLAINTEXT \
                 name=ECR_REGISTRY,value=${{ secrets.ECR_REGISTRY }},type=PLAINTEXT \
                 name=ECR_URI,value=${{ secrets.ECR_URI }},type=PLAINTEXT \
@@ -45,10 +50,10 @@ jobs:
           echo "Started CodeBuild build: $BUILD_ID"
           echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
 
-      # Optional wait block; enable later once you're happy
+      # Uncomment if you want GA to fail/succeed based on Kaizen result
       # - name: Wait for CodeBuild
       #   env:
-      #     BUILD_ID: ${{ steps.start_cb.outputs.build_id }}
+      #     BUILD_ID:   ${{ steps.start_cb.outputs.build_id }}
       #     AWS_REGION: ${{ secrets.AWS_REGION }}
       #   run: |
       #     set -euo pipefail
