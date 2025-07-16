@@ -1,0 +1,1 @@
+- Testing If the current  setup has vLLM installed via the image and if kaizen can see it
