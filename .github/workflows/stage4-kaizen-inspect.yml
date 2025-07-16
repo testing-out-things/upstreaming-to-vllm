@@ -1,0 +1,64 @@
+name: Stage-4 (Kaizen inspect vLLM overlay)
+
+on:
+  workflow_dispatch:    # manual run only while in PoC
+
+concurrency:
+  group: stage4-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kaizen-inspect:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Needed to call CodeBuild and pass creds into the build container.
+      # Run only on trusted branches (no forks) because we inject admin creds.
+      - name: Configure AWS creds
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Start CodeBuild (Stage 4 inspect)
+        id: start_cb
+        run: |
+          set -euo pipefail
+          BUILD_ID=$(aws codebuild start-build \
+            --project-name kaizen-poc \
+            --source-version ${{ github.sha }} \
+            --buildspec-override buildspec-stage4-inspect.yml \
+            --environment-variables-override \
+                name=IMAGE_TAG,value=${{ github.sha }},type=PLAINTEXT \
+                name=AWS_REGION,value=${{ secrets.AWS_REGION }},type=PLAINTEXT \
+                name=ECR_REGISTRY,value=${{ secrets.ECR_REGISTRY }},type=PLAINTEXT \
+                name=ECR_URI,value=${{ secrets.ECR_URI }},type=PLAINTEXT \
+                name=AWS_ACCESS_KEY_ID,value=${{ secrets.AWS_ACCESS_KEY_ID }},type=PLAINTEXT \
+                name=AWS_SECRET_ACCESS_KEY,value=${{ secrets.AWS_SECRET_ACCESS_KEY }},type=PLAINTEXT \
+                name=AWS_SESSION_TOKEN,value=${{ secrets.AWS_SESSION_TOKEN }},type=PLAINTEXT \
+            --query 'build.id' \
+            --output text)
+          echo "Started CodeBuild build: $BUILD_ID"
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+
+      # Optional wait block; enable later once you're happy
+      # - name: Wait for CodeBuild
+      #   env:
+      #     BUILD_ID: ${{ steps.start_cb.outputs.build_id }}
+      #     AWS_REGION: ${{ secrets.AWS_REGION }}
+      #   run: |
+      #     set -euo pipefail
+      #     while true; do
+      #       STATUS=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --query 'builds[0].buildStatus' --output text)
+      #       echo "$(date -u +%FT%TZ) CodeBuild status: $STATUS"
+      #       case "$STATUS" in
+      #         SUCCEEDED) exit 0;;
+      #         FAILED|FAULT|STOPPED|TIMED_OUT) exit 1;;
+      #         IN_PROGRESS) sleep 15;;
+      #         *) sleep 15;;
+      #       esac
+      #     done
