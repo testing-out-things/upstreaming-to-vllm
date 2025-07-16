@@ -6,26 +6,20 @@ phases:
       - echo "▶ Stage 3 — login to destination ECR"
       - aws ecr get-login-password --region $AWS_REGION | docker login -u AWS --password-stdin $ECR_REGISTRY
 
-      # Base image (fixed for now; override later when you stand up an internal base publisher)
-      - export BASE_IMAGE=$BASE_IMAGE_DEFAULT
-      - echo "Using BASE_IMAGE=$BASE_IMAGE"
+      # Use fixed public Neuron base for now (override later when you have internal base builds)
+      - echo "Using BASE_IMAGE=$BASE_IMAGE_DEFAULT"
 
   build:
     commands:
       - echo "▶ Build overlay image from PR commit"
-      - export IMAGE_TAG=$CODEBUILD_RESOLVED_SOURCE_VERSION
-      - docker build \
-          --build-arg BASE_IMAGE=$BASE_IMAGE \
-          -f Dockerfile.rebase \
-          -t $ECR_URI:$IMAGE_TAG \
-          .
+      - echo "Tag: $CODEBUILD_RESOLVED_SOURCE_VERSION"
+      - docker build --build-arg BASE_IMAGE=$BASE_IMAGE_DEFAULT -f Dockerfile.rebase -t $ECR_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION .
 
   post_build:
     commands:
       - echo "▶ Push overlay image"
-      - export IMAGE_TAG=$CODEBUILD_RESOLVED_SOURCE_VERSION
-      - docker push $ECR_URI:$IMAGE_TAG
-      - echo "IMAGE_URI=$ECR_URI:$IMAGE_TAG" | tee image-detail.txt
+      - docker push $ECR_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION
+      - echo "IMAGE_URI=$ECR_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION" | tee image-detail.txt
 
 artifacts:
   files:
