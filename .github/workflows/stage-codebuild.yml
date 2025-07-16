@@ -1,0 +1,80 @@
+name: Stage-3 (Build vLLM overlay image)
+
+on:
+  workflow_dispatch:          # manual run button
+  pull_request:               # auto on PRs; comment out if you want manual-only during bring-up
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Credentials used only to call CodeBuild APIs (not injected into the build container).
+      - name: Configure AWS creds
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Start CodeBuild (Stage 3)
+        id: start_build
+        run: |
+          set -euo pipefail
+          BUILD_ID=$(aws codebuild start-build \
+            --project-name kaizen-poc \
+            --source-version ${{ github.sha }} \
+            --buildspec-override buildspec-stage3.yml \
+            --environment-variables-override \
+                name=AWS_REGION,value=${{ secrets.AWS_REGION }},type=PLAINTEXT \
+                name=ECR_REGISTRY,value=${{ secrets.ECR_REGISTRY }},type=PLAINTEXT \
+                name=ECR_URI,value=${{ secrets.ECR_URI }},type=PLAINTEXT \
+            --query 'build.id' \
+            --output text)
+          echo "Started CodeBuild build: $BUILD_ID"
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for CodeBuild to finish
+        env:
+          BUILD_ID: ${{ steps.start_build.outputs.build_id }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          echo "Waiting for CodeBuild build: $BUILD_ID"
+          # Derive a console link for convenience
+          ACCOUNT_ID=$(echo "$BUILD_ID" | cut -d: -f5)
+          RAW_ID=$(echo "$BUILD_ID" | cut -d: -f7)  # build/<proj>:<uuid>
+          # The console URL wants the full build ID after 'build/'
+          CONSOLE_URL="https://${AWS_REGION}.console.aws.amazon.com/codesuite/codebuild/${ACCOUNT_ID}/projects/kaizen-poc/build/${RAW_ID}/?region=${AWS_REGION}"
+          echo "Build console: $CONSOLE_URL"
+
+          # Poll until terminal
+          while true; do
+            STATUS=$(aws codebuild batch-get-builds \
+              --ids "$BUILD_ID" \
+              --query 'builds[0].buildStatus' \
+              --output text)
+
+            echo "$(date -u +%FT%TZ) CodeBuild status: $STATUS"
+
+            case "$STATUS" in
+              SUCCEEDED)
+                echo "CodeBuild build succeeded."
+                exit 0
+                ;;
+              FAILED|FAULT|STOPPED|TIMED_OUT)
+                echo "CodeBuild build failed with status: $STATUS" >&2
+                exit 1
+                ;;
+              IN_PROGRESS)
+                sleep 15
+                ;;
+              *)
+                echo "Unknown status: $STATUS (continuing to poll)" >&2
+                sleep 15
+                ;;
+            esac
+          done
