@@ -3,16 +3,30 @@ version: 0.2
 phases:
   install:
     commands:
+      - set -e
       - echo "▶ Downloading Kaizen CLI"
       - aws s3 cp s3://navyadha-multi-lora-trn2/kaizen ./kaizen
       - chmod +x ./kaizen
 
+  pre_build:
+    commands:
+      - |
+        set -e
+        IMAGE_TAG=${IMAGE_TAG:-$CODEBUILD_RESOLVED_SOURCE_VERSION}
+        echo "▶ Verify image exists in ECR: $ECR_URI:$IMAGE_TAG"
+        # Repo name = everything after the first slash in ECR_URI
+        REPO_NAME=$(echo "$ECR_URI" | cut -d/ -f2-)
+        aws ecr describe-images --repository-name "$REPO_NAME" --image-ids imageTag="$IMAGE_TAG" > /dev/null
+        echo "Image found."
+
   build:
     commands:
-      - echo "▶ Kaizen inspect workload"
-      - IMAGE_TAG=$CODEBUILD_RESOLVED_SOURCE_VERSION
-      - ./kaizen start-workload \
-          --image $ECR_URI:$IMAGE_TAG \
+      - |
+        set -e
+        IMAGE_TAG=${IMAGE_TAG:-$CODEBUILD_RESOLVED_SOURCE_VERSION}
+        echo "▶ Launch Kaizen inspect workload with $ECR_URI:$IMAGE_TAG"
+        ./kaizen start-workload \
+          --image "$ECR_URI:$IMAGE_TAG" \
           --instanceType trn1.32xlarge \
           --nodeCount 1 \
           --command "python /workspace/src/ci_inspect.py" \
