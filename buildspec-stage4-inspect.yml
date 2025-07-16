@@ -1,0 +1,19 @@
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - echo "▶ Downloading Kaizen CLI"
+      - aws s3 cp s3://navyadha-multi-lora-trn2/kaizen ./kaizen
+      - chmod +x ./kaizen
+
+  build:
+    commands:
+      - echo "▶ Kaizen inspect workload"
+      - IMAGE_TAG=$CODEBUILD_RESOLVED_SOURCE_VERSION
+      - ./kaizen start-workload \
+          --image $ECR_URI:$IMAGE_TAG \
+          --instanceType trn1.32xlarge \
+          --nodeCount 1 \
+          --command "python /workspace/src/ci_inspect.py" \
+          --tail-logs
