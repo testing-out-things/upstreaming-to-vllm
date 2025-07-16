@@ -1,6 +1,8 @@
-name: Stage-2 (Kaizen smoke)
+name: Stage-3 (Build vLLM overlay image)
 
-on: [pull_request]
+on:
+  workflow_dispatch:          # manual run button
+  pull_request:               # auto on PRs (comment out until stable if you like)
 
 jobs:
   build:
@@ -8,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS creds for AWS CLI
+      - name: Configure AWS creds
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -16,14 +18,13 @@ jobs:
           aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      - name: Start CodeBuild (Stage-2)
+      - name: Start CodeBuild (Stage 3)
         run: |
           aws codebuild start-build \
             --project-name kaizen-poc \
             --source-version ${{ github.sha }} \
-            --buildspec-override buildspec-stage2.yml \
+            --buildspec-override buildspec-stage3.yml \
             --environment-variables-override \
-                name=AWS_ACCESS_KEY_ID,value=${{ secrets.AWS_ACCESS_KEY_ID }},type=PLAINTEXT \
-                name=AWS_SECRET_ACCESS_KEY,value=${{ secrets.AWS_SECRET_ACCESS_KEY }},type=PLAINTEXT \
-                name=AWS_SESSION_TOKEN,value=${{ secrets.AWS_SESSION_TOKEN }},type=PLAINTEXT \
-                name=AWS_REGION,value=${{ secrets.AWS_REGION }},type=PLAINTEXT
+              name=AWS_REGION,value=${{ secrets.AWS_REGION }},type=PLAINTEXT \
+              name=ECR_REGISTRY,value=${{ secrets.ECR_REGISTRY }},type=PLAINTEXT \
+              name=ECR_URI,value=${{ secrets.ECR_URI }},type=PLAINTEXT
