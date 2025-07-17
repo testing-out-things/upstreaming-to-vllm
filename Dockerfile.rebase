@@ -1,24 +1,35 @@
 # Dockerfile.rebase
 # Build a test overlay image by layering PR source + vLLM runtime deps over a Neuron base.
-# BASE_IMAGE is passed at build time.
-
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-# Update basic packaging tools (optional but helpful)
+# Upgrade core packaging tools (safe; already high versions in base but idempotent)
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Copy repo source early so we can reference requirements
+# Copy repo source so we can read requirements files
 WORKDIR /workspace/src
 COPY . /workspace/src
 
-# Install vLLM runtime deps from repo requirements (filter out torch* & flash-attn* lines to avoid conflicts)
-RUN awk 'NF && $1 !~ /^#/ && $1 !~ /^torch/ && $1 !~ /^torchvision/ && $1 !~ /^torchaudio/ && $1 !~ /^flash[-_]attn/' \
-      requirements/common.txt requirements/neuron.txt > /tmp/vllm-deps.txt && \
-    pip install --no-cache-dir -r /tmp/vllm-deps.txt || echo "WARN: dep install non-zero; continuing (PoC)"
+# --- Install vLLM deps -------------------------------------------------------
+# We build filtered requirement files:
+#   - Drop comments, blanks
+#   - Drop nested -r includes (we explicitly include both top-level files)
+#   - Drop torch*, torchvision*, torchaudio*, flash-attn* (Neuron stack provides torch-neuronx)
+# Then install both filtered files together.
+RUN set -e; \
+    grep -v -E '^\s*(#|$|-r)' requirements/common.txt \
+      | grep -v -Ei '^(torch|torchvision|torchaudio|flash[-_]attn)' > /tmp/vllm-common.txt; \
+    grep -v -E '^\s*(#|$|-r)' requirements/neuron.txt \
+      | grep -v -Ei '^(torch|torchvision|torchaudio|flash[-_]attn)' > /tmp/vllm-neuron.txt; \
+    cat /tmp/vllm-common.txt /tmp/vllm-neuron.txt > /tmp/vllm-deps.txt; \
+    echo "Installing vLLM deps from filtered list:"; \
+    cat /tmp/vllm-deps.txt; \
+    pip install --no-cache-dir -r /tmp/vllm-deps.txt || echo 'WARN: filtered requirements install returned non-zero (continuing PoC)'; \
+    # Insurance: explicitly ensure critical runtime deps present / upgraded.
+    pip install --no-cache-dir "pydantic>2" tenacity fastapi uvicorn sse-starlette
 
-# Make repo importable without installing it
+# Make repo importable without build (avoid CUDA toolchain requirement)
 ENV PYTHONPATH=/workspace/src:${PYTHONPATH}
 
-# Default smoke command; Kaizen will override with its own --command
+# Default smoke command (Kaizen will override)
 CMD ["python", "examples/offline_inference/neuron.py"]
