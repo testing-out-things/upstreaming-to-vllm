@@ -9,26 +9,48 @@ phases:
   pre_build:
     commands:
       - set -e
-      - echo "▶ Stage 3 — login to destination ECR"
-      - aws ecr get-login-password --region $AWS_REGION | docker login -u AWS --password-stdin $ECR_REGISTRY
-      # Normalize tag (fallback = CodeBuild source revision if not overridden)
       - IMAGE_TAG=${IMAGE_TAG:-$CODEBUILD_RESOLVED_SOURCE_VERSION}
       - echo "Using IMAGE_TAG=$IMAGE_TAG"
+
+      # Login to 844 (source) ECR
+      - echo "▶ Login to 844 ECR: $ECR_REGISTRY"
+      - aws ecr get-login-password --region $AWS_REGION | docker login -u AWS --password-stdin $ECR_REGISTRY
 
   build:
     commands:
       - set -e
       - echo "▶ Build overlay image from commit $IMAGE_TAG"
-      # Dockerfile.rebase already has FROM ...; if you need BASE_IMAGE arg, add --build-arg.
       - docker build -f Dockerfile.rebase -t $ECR_URI:$IMAGE_TAG .
 
   post_build:
     commands:
       - set -e
-      - echo "▶ Push overlay image"
+      - IMAGE_TAG=${IMAGE_TAG:-$CODEBUILD_RESOLVED_SOURCE_VERSION}
+
+      # Push to 844
+      - echo "▶ Push overlay image to 844: $ECR_URI:$IMAGE_TAG"
       - docker push $ECR_URI:$IMAGE_TAG
-      - echo "IMAGE_URI=$ECR_URI:$IMAGE_TAG" | tee image-detail.txt
+
+      # ---------- Dual push to 1229 (Kaizen) ----------
+      - echo "▶ Login to 1229 ECR: $KAIZEN_ECR_REGISTRY"
+      - >
+        AWS_ACCESS_KEY_ID="$KAIZEN_ACCESS_KEY_ID"
+        AWS_SECRET_ACCESS_KEY="$KAIZEN_SECRET_ACCESS_KEY"
+        AWS_SESSION_TOKEN="$KAIZEN_SESSION_TOKEN"
+        aws ecr get-login-password --region ${KAIZEN_REGION:-$AWS_REGION} |
+        docker login -u AWS --password-stdin $KAIZEN_ECR_REGISTRY
+
+      - echo "▶ Re-tag image for 1229: $KAIZEN_ECR_URI:$IMAGE_TAG"
+      - docker tag $ECR_URI:$IMAGE_TAG $KAIZEN_ECR_URI:$IMAGE_TAG
+
+      - echo "▶ Push overlay image to 1229"
+      - docker push $KAIZEN_ECR_URI:$IMAGE_TAG
+      # -----------------------------------------------
+
+      - echo "844_IMAGE_URI=$ECR_URI:$IMAGE_TAG" | tee image-detail-844.txt
+      - echo "KAIZEN_IMAGE_URI=$KAIZEN_ECR_URI:$IMAGE_TAG" | tee image-detail-1229.txt
 
 artifacts:
   files:
-    - image-detail.txt
+    - image-detail-844.txt
+    - image-detail-1229.txt
