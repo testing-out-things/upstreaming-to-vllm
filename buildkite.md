@@ -1,2 +1,3 @@
 - Testing BK setp
 - Testing stage 3 dual push ecr
+- ECR was pushed to other account, now testing if kaizen can access this
