@@ -14,16 +14,31 @@ phases:
       - |
         set -e
         IMAGE_TAG=${IMAGE_TAG:-$CODEBUILD_RESOLVED_SOURCE_VERSION}
-        echo "▶ Launch Kaizen inspect workload with $KAIZEN_ECR_URI:$IMAGE_TAG"
+        TP_SIZE=${TP_SIZE:-16}
+        echo "▶ Launch Kaizen vLLM server smoke: image=$KAIZEN_ECR_URI:$IMAGE_TAG tp=$TP_SIZE"
 
-        # Restore 844 admin creds before calling Kaizen (required to auth to Kaizen service).
+        # Restore 844 admin creds before calling Kaizen (required)
         export AWS_ACCESS_KEY_ID="$ADMIN_AWS_ACCESS_KEY_ID"
         export AWS_SECRET_ACCESS_KEY="$ADMIN_AWS_SECRET_ACCESS_KEY"
         export AWS_SESSION_TOKEN="$ADMIN_AWS_SESSION_TOKEN"
+
+        # Build the workload command (single line)
+        KAIZEN_RUN_CMD="timeout 120s python3 -m vllm.entrypoints.openai.api_server \
+          --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+          --max-num-seqs 1 \
+          --max-model-len 128 \
+          --tensor-parallel-size ${TP_SIZE} \
+          --device neuron \
+          --use-v2-block-manager \
+          --override-neuron-config '{}' \
+          --port 8000"
+
+        echo "▶ Workload command:"
+        echo "${KAIZEN_RUN_CMD}"
 
         ./kaizen start-workload \
           --image "$KAIZEN_ECR_URI:$IMAGE_TAG" \
           --instanceType trn1.32xlarge \
           --nodeCount 1 \
-          --command "python /workspace/src/ci_inspect.py" \
+          --command "${KAIZEN_RUN_CMD}" \
           --tail-logs
