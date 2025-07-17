@@ -3,51 +3,56 @@ version: 0.2
 phases:
   install:
     commands:
-      - set -e
-      - echo "▶ Stage 3 — starting build environment"
+      - |
+        set -e
+        echo "▶ Stage 3 — starting build environment"
 
   pre_build:
     commands:
-      - set -e
-      - IMAGE_TAG=${IMAGE_TAG:-$CODEBUILD_RESOLVED_SOURCE_VERSION}
-      - echo "Using IMAGE_TAG=$IMAGE_TAG"
+      - |
+        set -e
+        # Normalize IMAGE_TAG (fallback to CodeBuild source rev)
+        IMAGE_TAG=${IMAGE_TAG:-$CODEBUILD_RESOLVED_SOURCE_VERSION}
+        echo "Using IMAGE_TAG=$IMAGE_TAG"
 
-      # Login to 844 (source) ECR
-      - echo "▶ Login to 844 ECR: $ECR_REGISTRY"
-      - aws ecr get-login-password --region $AWS_REGION | docker login -u AWS --password-stdin $ECR_REGISTRY
+        echo "▶ Login to 844 ECR: $ECR_REGISTRY"
+        aws ecr get-login-password --region "$AWS_REGION" \
+          | docker login -u AWS --password-stdin "$ECR_REGISTRY"
 
   build:
     commands:
-      - set -e
-      - echo "▶ Build overlay image from commit $IMAGE_TAG"
-      - docker build -f Dockerfile.rebase -t $ECR_URI:$IMAGE_TAG .
+      - |
+        set -e
+        # Use IMAGE_TAG from previous phase; recompute for safety
+        IMAGE_TAG=${IMAGE_TAG:-$CODEBUILD_RESOLVED_SOURCE_VERSION}
+        echo "▶ Build overlay image from commit $IMAGE_TAG"
+        docker build -f Dockerfile.rebase -t "$ECR_URI:$IMAGE_TAG" .
 
   post_build:
     commands:
-      - set -e
-      - IMAGE_TAG=${IMAGE_TAG:-$CODEBUILD_RESOLVED_SOURCE_VERSION}
-
-      # Push to 844
-      - echo "▶ Push overlay image to 844: $ECR_URI:$IMAGE_TAG"
-      - docker push $ECR_URI:$IMAGE_TAG
-
-      # ---------- Dual push to 1229 (Kaizen) ----------
       - |
+        set -e
+        IMAGE_TAG=${IMAGE_TAG:-$CODEBUILD_RESOLVED_SOURCE_VERSION}
+
+        echo "▶ Push overlay image to 844: $ECR_URI:$IMAGE_TAG"
+        docker push "$ECR_URI:$IMAGE_TAG"
+
         echo "▶ Login to 1229 ECR: $KAIZEN_ECR_REGISTRY"
+        # Export 1229 creds into env for this block
         export AWS_ACCESS_KEY_ID="$KAIZEN_ACCESS_KEY_ID"
         export AWS_SECRET_ACCESS_KEY="$KAIZEN_SECRET_ACCESS_KEY"
         export AWS_SESSION_TOKEN="$KAIZEN_SESSION_TOKEN"
-        aws ecr get-login-password --region ${KAIZEN_REGION:-$AWS_REGION} | docker login -u AWS --password-stdin $KAIZEN_ECR_REGISTRY
+        aws ecr get-login-password --region "${KAIZEN_REGION:-$AWS_REGION}" \
+          | docker login -u AWS --password-stdin "$KAIZEN_ECR_REGISTRY"
 
-      - echo "▶ Re-tag image for 1229: $KAIZEN_ECR_URI:$IMAGE_TAG"
-      - docker tag $ECR_URI:$IMAGE_TAG $KAIZEN_ECR_URI:$IMAGE_TAG
+        echo "▶ Re-tag image for 1229: $KAIZEN_ECR_URI:$IMAGE_TAG"
+        docker tag "$ECR_URI:$IMAGE_TAG" "$KAIZEN_ECR_URI:$IMAGE_TAG"
 
-      - echo "▶ Push overlay image to 1229"
-      - docker push $KAIZEN_ECR_URI:$IMAGE_TAG
-      # -----------------------------------------------
+        echo "▶ Push overlay image to 1229"
+        docker push "$KAIZEN_ECR_URI:$IMAGE_TAG"
 
-      - echo "844_IMAGE_URI=$ECR_URI:$IMAGE_TAG" | tee image-detail-844.txt
-      - echo "KAIZEN_IMAGE_URI=$KAIZEN_ECR_URI:$IMAGE_TAG" | tee image-detail-1229.txt
+        echo "844_IMAGE_URI=$ECR_URI:$IMAGE_TAG"     | tee    image-detail-844.txt
+        echo "KAIZEN_IMAGE_URI=$KAIZEN_ECR_URI:$IMAGE_TAG" | tee  image-detail-1229.txt
 
 artifacts:
   files:
