@@ -1,22 +1,21 @@
-name: Stage-3 (Build vLLM overlay image)
+name: Stage-3 Overlay (latest 844 base → Kaizen ECR)
 
 on:
-  workflow_dispatch:          # manual run button
-  pull_request:               # auto on PRs
+  workflow_dispatch:
+  pull_request:
 
-# Normalize image tag: PR head commit when present; fallback to current SHA.
 env:
   IMAGE_TAG: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
-  build:
+  build-overlay:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      # Credentials for the 844 build account (source ECR).
-      - name: Configure AWS creds (844 build/push)
+      # 844 creds to invoke CodeBuild + pull base
+      - name: Configure AWS creds (844)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -24,15 +23,15 @@ jobs:
           aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      - name: Start CodeBuild (Stage 3 dual-push)
+      - name: Start CodeBuild (overlay)
         id: start_build
         run: |
           set -euo pipefail
-          echo "Stage-3: building image tag $IMAGE_TAG"
+          echo "Overlay Stage-3: building image tag $IMAGE_TAG from latest 844 base"
           BUILD_ID=$(aws codebuild start-build \
             --project-name kaizen-poc \
             --source-version ${{ env.IMAGE_TAG }} \
-            --buildspec-override buildspec-stage3.yml \
+            --buildspec-override buildspec-stage3-overlay.yml \
             --environment-variables-override \
                 name=IMAGE_TAG,value=${{ env.IMAGE_TAG }},type=PLAINTEXT \
                 name=AWS_REGION,value=${{ secrets.AWS_REGION }},type=PLAINTEXT \
@@ -56,11 +55,6 @@ jobs:
         run: |
           set -euo pipefail
           echo "Waiting for CodeBuild build: $BUILD_ID"
-          ACCOUNT_ID=$(echo "$BUILD_ID" | cut -d: -f5)
-          RAW_ID=$(echo "$BUILD_ID" | cut -d: -f7)
-          CONSOLE_URL="https://${AWS_REGION}.console.aws.amazon.com/codesuite/codebuild/${ACCOUNT_ID}/projects/kaizen-poc/build/${RAW_ID}/?region=${AWS_REGION}"
-          echo "Build console: $CONSOLE_URL"
-
           while true; do
             STATUS=$(aws codebuild batch-get-builds \
               --ids "$BUILD_ID" \
@@ -68,9 +62,9 @@ jobs:
               --output text)
             echo "$(date -u +%FT%TZ) CodeBuild status: $STATUS"
             case "$STATUS" in
-              SUCCEEDED) echo "CodeBuild build succeeded."; exit 0;;
-              FAILED|FAULT|STOPPED|TIMED_OUT) echo "CodeBuild build failed: $STATUS" >&2; exit 1;;
+              SUCCEEDED) exit 0;;
+              FAILED|FAULT|STOPPED|TIMED_OUT) echo "Build failed: $STATUS" >&2; exit 1;;
               IN_PROGRESS) sleep 15;;
-              *) echo "Unknown status: $STATUS" >&2; sleep 15;;
+              *) sleep 15;;
             esac
           done
