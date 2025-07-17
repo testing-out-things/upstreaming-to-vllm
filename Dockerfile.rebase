@@ -1,12 +1,24 @@
-# Base Neuron runtime (NO vLLM included)
-FROM public.ecr.aws/neuron/pytorch-inference-neuronx:2.7.0-neuronx-py310-sdk2.24.1-ubuntu22.04
+# Dockerfile.rebase
+# Build a test overlay image by layering PR source + vLLM runtime deps over a Neuron base.
+# BASE_IMAGE is passed at build time.
 
-# Copy your repo (PR code)
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# Update basic packaging tools (optional but helpful)
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Copy repo source early so we can reference requirements
 WORKDIR /workspace/src
-COPY . .
+COPY . /workspace/src
 
-# Prepend repo to PYTHONPATH so imports see *this* vLLM code first
+# Install vLLM runtime deps from repo requirements (filter out torch* & flash-attn* lines to avoid conflicts)
+RUN awk 'NF && $1 !~ /^#/ && $1 !~ /^torch/ && $1 !~ /^torchvision/ && $1 !~ /^torchaudio/ && $1 !~ /^flash[-_]attn/' \
+      requirements/common.txt requirements/neuron.txt > /tmp/vllm-deps.txt && \
+    pip install --no-cache-dir -r /tmp/vllm-deps.txt || echo "WARN: dep install non-zero; continuing (PoC)"
+
+# Make repo importable without installing it
 ENV PYTHONPATH=/workspace/src:${PYTHONPATH}
 
-# Default command (will be overridden in Stage 4)
+# Default smoke command; Kaizen will override with its own --command
 CMD ["python", "examples/offline_inference/neuron.py"]
