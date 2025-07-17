@@ -1,43 +1,41 @@
-# Dockerfile.rebase
-# Build a test overlay image by layering PR source + vLLM runtime deps over a Neuron base.
+# Lightweight overlay: layer PR vLLM (editable) on top of latest Neuron base.
+
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-# Upgrade core packaging tools (safe; already high versions in base but idempotent)
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+# Make sure we target the Neuron backend (skips CUDA checks during build).
+ENV VLLM_TARGET_DEVICE=neuron
 
-# Copy repo source so we can read requirements files
+# Reduce pip noise and speed things up a bit.
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+# (Base images already include Python + Neuron toolchain; upgrade core tools is cheap & idempotent.)
+RUN pip install --upgrade pip setuptools wheel
+
+# Copy PR source.
 WORKDIR /workspace/src
 COPY . /workspace/src
 
-# --- Install vLLM deps -------------------------------------------------------
-# We build filtered requirement files:
-#   - Drop comments, blanks
-#   - Drop nested -r includes (we explicitly include both top-level files)
-#   - Drop torch*, torchvision*, torchaudio*, flash-attn* (Neuron stack provides torch-neuronx)
-# Then install both filtered files together.
-RUN set -e; \
-    grep -v -E '^\s*(#|$|-r)' requirements/common.txt \
-      | grep -v -Ei '^(torch|torchvision|torchaudio|flash[-_]attn|scipy|setuptools|neuronx-cc|numpy)' > /tmp/vllm-common.txt; \
-    grep -v -E '^\s*(#|$|-r)' requirements/neuron.txt \
-      | grep -v -Ei '^(torch|torchvision|torchaudio|flash[-_]attn|scipy|setuptools|neuronx-cc|numpy)' > /tmp/vllm-neuron.txt; \
-    cat /tmp/vllm-common.txt /tmp/vllm-neuron.txt > /tmp/vllm-deps.txt; \
-    echo 'Installing vLLM deps from filtered list:'; \
-    cat /tmp/vllm-deps.txt; \
-    pip install --no-cache-dir -r /tmp/vllm-deps.txt || echo 'WARN: filtered reqs non-zero (continuing PoC)'; \
-    # Insurance: make sure essentials are present & compatible
-    pip install --no-cache-dir \
-      "numpy<1.29" \
-      cachetools \
-      sentencepiece \
-      "pydantic>=2.10" \
-      tenacity \
-      fastapi \
-      uvicorn \
-      sse-starlette
+# Install vLLM runtime deps for Neuron.
+# We point pip at the Neuron extra index; the packages already in the base should satisfy most constraints,
+# so pip will mostly no-op. Upgrade strategy "only-if-needed" avoids churning large wheels.
+RUN pip install --upgrade-strategy only-if-needed \
+      --extra-index-url=https://pip.repos.neuron.amazonaws.com \
+      -r requirements/neuron.txt
 
-# Make repo importable without build (avoid CUDA toolchain requirement)
+# Some upstream images explicitly remove transformers-neuronx due to version conflicts; keep that here but ignore failure.
+RUN pip uninstall -y transformers-neuronx || true
+
+# Install *this PR's* vLLM in editable form but DO NOT resolve deps again.
+# (Deps were handled above; this just drops an .egg-link so imports resolve to /workspace/src.)
+RUN pip install --no-build-isolation --no-deps -v -e .
+
+# Optional: fast smoke deps (if not already present via requirements)
+RUN pip install fastapi uvicorn sse-starlette tenacity || true
+
+# Make the repo importable even if something goes odd during install.
 ENV PYTHONPATH=/workspace/src:${PYTHONPATH}
 
-# Default smoke command (Kaizen will override)
+# Default smoke cmd (Kaizen overrides)
 CMD ["python", "examples/offline_inference/neuron.py"]
