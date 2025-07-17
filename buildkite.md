@@ -1,1 +1,2 @@
 - Testing BK setp
+- Testing stage 3 dual push ecr
