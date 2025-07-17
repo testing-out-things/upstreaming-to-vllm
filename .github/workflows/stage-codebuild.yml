@@ -4,9 +4,7 @@ on:
   workflow_dispatch:          # manual run button
   pull_request:               # auto on PRs
 
-# Normalize the image tag across PR + manual runs.
-# If this is a PR, use the PR *head* commit (your code).
-# Otherwise (workflow_dispatch / push), fall back to github.sha.
+# Normalize image tag: PR head commit when present; fallback to current SHA.
 env:
   IMAGE_TAG: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -17,8 +15,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Credentials used only to call CodeBuild APIs (not injected into the build container).
-      - name: Configure AWS creds
+      # Credentials for the 844 build account (source ECR).
+      - name: Configure AWS creds (844 build/push)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -26,7 +24,7 @@ jobs:
           aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      - name: Start CodeBuild (Stage 3)
+      - name: Start CodeBuild (Stage 3 dual-push)
         id: start_build
         run: |
           set -euo pipefail
@@ -40,6 +38,12 @@ jobs:
                 name=AWS_REGION,value=${{ secrets.AWS_REGION }},type=PLAINTEXT \
                 name=ECR_REGISTRY,value=${{ secrets.ECR_REGISTRY }},type=PLAINTEXT \
                 name=ECR_URI,value=${{ secrets.ECR_URI }},type=PLAINTEXT \
+                name=KAIZEN_REGION,value=${{ secrets.KAIZEN_REGION }},type=PLAINTEXT \
+                name=KAIZEN_ECR_REGISTRY,value=${{ secrets.KAIZEN_ECR_REGISTRY }},type=PLAINTEXT \
+                name=KAIZEN_ECR_URI,value=${{ secrets.KAIZEN_ECR_URI }},type=PLAINTEXT \
+                name=KAIZEN_ACCESS_KEY_ID,value=${{ secrets.KAIZEN_ACCESS_KEY_ID }},type=PLAINTEXT \
+                name=KAIZEN_SECRET_ACCESS_KEY,value=${{ secrets.KAIZEN_SECRET_ACCESS_KEY }},type=PLAINTEXT \
+                name=KAIZEN_SESSION_TOKEN,value=${{ secrets.KAIZEN_SESSION_TOKEN }},type=PLAINTEXT \
             --query 'build.id' \
             --output text)
           echo "Started CodeBuild build: $BUILD_ID"
@@ -53,7 +57,7 @@ jobs:
           set -euo pipefail
           echo "Waiting for CodeBuild build: $BUILD_ID"
           ACCOUNT_ID=$(echo "$BUILD_ID" | cut -d: -f5)
-          RAW_ID=$(echo "$BUILD_ID" | cut -d: -f7)  # build/<proj>:<uuid>
+          RAW_ID=$(echo "$BUILD_ID" | cut -d: -f7)
           CONSOLE_URL="https://${AWS_REGION}.console.aws.amazon.com/codesuite/codebuild/${ACCOUNT_ID}/projects/kaizen-poc/build/${RAW_ID}/?region=${AWS_REGION}"
           echo "Build console: $CONSOLE_URL"
 
@@ -64,20 +68,9 @@ jobs:
               --output text)
             echo "$(date -u +%FT%TZ) CodeBuild status: $STATUS"
             case "$STATUS" in
-              SUCCEEDED)
-                echo "CodeBuild build succeeded."
-                exit 0
-                ;;
-              FAILED|FAULT|STOPPED|TIMED_OUT)
-                echo "CodeBuild build failed with status: $STATUS" >&2
-                exit 1
-                ;;
-              IN_PROGRESS)
-                sleep 15
-                ;;
-              *)
-                echo "Unknown status: $STATUS (continuing to poll)" >&2
-                sleep 15
-                ;;
+              SUCCEEDED) echo "CodeBuild build succeeded."; exit 0;;
+              FAILED|FAULT|STOPPED|TIMED_OUT) echo "CodeBuild build failed: $STATUS" >&2; exit 1;;
+              IN_PROGRESS) sleep 15;;
+              *) echo "Unknown status: $STATUS" >&2; sleep 15;;
             esac
           done
