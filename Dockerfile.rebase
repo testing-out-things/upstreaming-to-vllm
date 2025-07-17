@@ -18,18 +18,19 @@ COPY . /workspace/src
 # Then install both filtered files together.
 RUN set -e; \
     grep -v -E '^\s*(#|$|-r)' requirements/common.txt \
-      | grep -v -Ei '^(torch|torchvision|torchaudio|flash[-_]attn|scipy|setuptools)' > /tmp/vllm-common.txt; \
+      | grep -v -Ei '^(torch|torchvision|torchaudio|flash[-_]attn|scipy|setuptools|neuronx-cc|numpy)' > /tmp/vllm-common.txt; \
     grep -v -E '^\s*(#|$|-r)' requirements/neuron.txt \
-      | grep -v -Ei '^(torch|torchvision|torchaudio|flash[-_]attn|scipy|setuptools|neuronx-cc)' > /tmp/vllm-neuron.txt; \
+      | grep -v -Ei '^(torch|torchvision|torchaudio|flash[-_]attn|scipy|setuptools|neuronx-cc|numpy)' > /tmp/vllm-neuron.txt; \
     cat /tmp/vllm-common.txt /tmp/vllm-neuron.txt > /tmp/vllm-deps.txt; \
     echo 'Installing vLLM deps from filtered list:'; \
     cat /tmp/vllm-deps.txt; \
-    pip install --no-cache-dir -r /tmp/vllm-deps.txt; \
-    # Insurance: top off a few critical runtime deps in case they were skipped or version-conflicted.
+    pip install --no-cache-dir -r /tmp/vllm-deps.txt || echo 'WARN: filtered reqs non-zero (continuing PoC)'; \
+    # Insurance: make sure essentials are present & compatible
     pip install --no-cache-dir \
+      "numpy<1.29" \
       cachetools \
       sentencepiece \
-      pydantic>=2.10 \
+      "pydantic>=2.10" \
       tenacity \
       fastapi \
       uvicorn \
