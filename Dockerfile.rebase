@@ -18,15 +18,22 @@ COPY . /workspace/src
 # Then install both filtered files together.
 RUN set -e; \
     grep -v -E '^\s*(#|$|-r)' requirements/common.txt \
-      | grep -v -Ei '^(torch|torchvision|torchaudio|flash[-_]attn)' > /tmp/vllm-common.txt; \
+      | grep -v -Ei '^(torch|torchvision|torchaudio|flash[-_]attn|scipy|setuptools)' > /tmp/vllm-common.txt; \
     grep -v -E '^\s*(#|$|-r)' requirements/neuron.txt \
-      | grep -v -Ei '^(torch|torchvision|torchaudio|flash[-_]attn)' > /tmp/vllm-neuron.txt; \
+      | grep -v -Ei '^(torch|torchvision|torchaudio|flash[-_]attn|scipy|setuptools|neuronx-cc)' > /tmp/vllm-neuron.txt; \
     cat /tmp/vllm-common.txt /tmp/vllm-neuron.txt > /tmp/vllm-deps.txt; \
-    echo "Installing vLLM deps from filtered list:"; \
+    echo 'Installing vLLM deps from filtered list:'; \
     cat /tmp/vllm-deps.txt; \
-    pip install --no-cache-dir -r /tmp/vllm-deps.txt || echo 'WARN: filtered requirements install returned non-zero (continuing PoC)'; \
-    # Insurance: explicitly ensure critical runtime deps present / upgraded.
-    pip install --no-cache-dir "pydantic>2" tenacity fastapi uvicorn sse-starlette
+    pip install --no-cache-dir -r /tmp/vllm-deps.txt; \
+    # Insurance: top off a few critical runtime deps in case they were skipped or version-conflicted.
+    pip install --no-cache-dir \
+      cachetools \
+      sentencepiece \
+      pydantic>=2.10 \
+      tenacity \
+      fastapi \
+      uvicorn \
+      sse-starlette
 
 # Make repo importable without build (avoid CUDA toolchain requirement)
 ENV PYTHONPATH=/workspace/src:${PYTHONPATH}
