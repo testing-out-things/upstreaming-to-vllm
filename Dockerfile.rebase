@@ -1,41 +1,84 @@
-# Lightweight overlay: layer PR vLLM (editable) on top of latest Neuron base.
+# ---------------------------------------------------------------------------
+# Clean full overlay: install *all* vLLM Neuron requirements & PR source
+# on top of a Neuron runtime base image supplied at build time.
+#
+# Usage:
+#   docker build --build-arg BASE_IMAGE=<acct>.dkr.ecr.../base:tag -f Dockerfile.rebase -t myoverlay:TAG .
+# CodeBuild already provides BASE_IMAGE and tags/pushes for you.
+# ---------------------------------------------------------------------------
 
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-# Make sure we target the Neuron backend (skips CUDA checks during build).
-ENV VLLM_TARGET_DEVICE=neuron
+# ---------------------------------------------------------------------------
+# Environment hygiene
+# ---------------------------------------------------------------------------
+ENV VLLM_TARGET_DEVICE=neuron \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1
 
-# Reduce pip noise and speed things up a bit.
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
+# Optional: install a couple small build utilities that some packages expect.
+# (Most Neuron bases already have git + python; keep this light.)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git && \
+    rm -rf /var/lib/apt/lists/*
 
-# (Base images already include Python + Neuron toolchain; upgrade core tools is cheap & idempotent.)
+# Core packaging tools (idempotent).
 RUN pip install --upgrade pip setuptools wheel
 
-# Copy PR source.
-WORKDIR /workspace/src
-COPY . /workspace/src
+# Copy PR source (so we can read requirements + install editable).
+WORKDIR /workspace/vllm
+COPY . /workspace/vllm
 
-# Install vLLM runtime deps for Neuron.
-# We point pip at the Neuron extra index; the packages already in the base should satisfy most constraints,
-# so pip will mostly no-op. Upgrade strategy "only-if-needed" avoids churning large wheels.
-RUN pip install --upgrade-strategy only-if-needed \
+# ---------------------------------------------------------------------------
+# Guardrails for heavy scientific deps
+# ---------------------------------------------------------------------------
+# We PRE-PIN NumPy to a Neuron-safe range (<1.29) so pip does not upgrade to 2.x
+# (which triggered SciPy build-from-source in prior attempts).
+# Do this *before* installing the bulk requirements.
+RUN pip install "numpy<1.29"
+
+# ---------------------------------------------------------------------------
+# Install the full Neuron requirements used by vLLM.
+# This file includes (via -r) common.txt, so you get the whole stack.
+# We use:
+#   --extra-index-url ...  to pull Neuron-custom wheels when available
+#   --upgrade-strategy only-if-needed  so we don't blow away the tuned Neuron stack
+#   --no-build-isolation  helps reuse already-installed build tooling
+#
+# NOTE: This may still be a long install the first time; that’s expected.
+# ---------------------------------------------------------------------------
+RUN pip install \
+      --upgrade-strategy only-if-needed \
+      --no-build-isolation \
       --extra-index-url=https://pip.repos.neuron.amazonaws.com \
       -r requirements/neuron.txt
 
-# Some upstream images explicitly remove transformers-neuronx due to version conflicts; keep that here but ignore failure.
+# Some upstream images remove transformers-neuronx to avoid version
+# conflicts with vanilla transformers; keep that pattern but ignore errors.
 RUN pip uninstall -y transformers-neuronx || true
 
-# Install *this PR's* vLLM in editable form but DO NOT resolve deps again.
-# (Deps were handled above; this just drops an .egg-link so imports resolve to /workspace/src.)
+# Minimal build helpers required by vLLM’s setup (some come in via reqs;
+# install explicitly to avoid “setuptools_scm not found” etc).
+RUN pip install -U \
+      "setuptools-scm>=8" \
+      packaging \
+      cmake \
+      ninja \
+      jinja2
+
+# ---------------------------------------------------------------------------
+# Install *this PR's vLLM* in editable mode **without** re-resolving deps.
+# This leaves an egg-link so imports resolve to /workspace/vllm.
+# ---------------------------------------------------------------------------
 RUN pip install --no-build-isolation --no-deps -v -e .
 
-# Optional: fast smoke deps (if not already present via requirements)
-RUN pip install fastapi uvicorn sse-starlette tenacity || true
+# Optional developer/test utilities (lightweight; ignore failure).
+RUN pip install -e tests/vllm_test_utils || true
 
-# Make the repo importable even if something goes odd during install.
-ENV PYTHONPATH=/workspace/src:${PYTHONPATH}
+# Fallback in case editable install ever breaks import discovery.
+ENV PYTHONPATH=/workspace/vllm:${PYTHONPATH}
 
-# Default smoke cmd (Kaizen overrides)
-CMD ["python", "examples/offline_inference/neuron.py"]
+# Default container entrypoint. Kaizen will override with --command anyway.
+CMD ["/bin/bash"]
