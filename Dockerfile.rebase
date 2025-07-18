@@ -63,6 +63,7 @@ RUN pip uninstall -y transformers-neuronx || true
 # install explicitly to avoid “setuptools_scm not found” etc).
 RUN pip install -U \
       "setuptools-scm>=8" \
+      tenacity \
       packaging \
       cmake \
       ninja \
