@@ -1,4 +1,4 @@
-name: PR Kaizen Test Pipeline
+name: PR Kaizen Test - PoC
 
 on:
   pull_request:
@@ -8,12 +8,12 @@ env:
   IMAGE_TAG: ${{ github.event.pull_request.head.sha || github.sha }}
 
 concurrency:
-  group: kaizen-pr-${{ github.ref }}
+  group: kaizen-pr-single-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-and-test:
-    name: Build Overlay and Run Kaizen Test
+    name: Build and Test in Single CodeBuild Job
     runs-on: ubuntu-latest
     
     steps:
@@ -29,17 +29,17 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      # Stage 3: Build overlay image
-      - name: Start CodeBuild - Build Overlay Image
-        id: build_overlay
+      # Single CodeBuild job for both build and test
+      - name: Start CodeBuild - Unified Pipeline
+        id: unified_build
         run: |
           set -euo pipefail
-          echo "🚀 Stage 3: Building overlay image with tag $IMAGE_TAG from latest 844 base"
+          echo "🚀 Starting unified build and test pipeline with tag $IMAGE_TAG"
           
           BUILD_ID=$(aws codebuild start-build \
             --project-name kaizen-poc \
             --source-version ${{ env.IMAGE_TAG }} \
-            --buildspec-override buildspec-stage3-overlay.yml \
+            --buildspec-override buildspec-unified.yml \
             --environment-variables-override \
                 name=IMAGE_TAG,value=${{ env.IMAGE_TAG }},type=PLAINTEXT \
                 name=AWS_REGION,value=${{ secrets.AWS_REGION }},type=PLAINTEXT \
@@ -54,117 +54,67 @@ jobs:
                 name=KAIZEN_ACCESS_KEY_ID,value=${{ secrets.KAIZEN_ACCESS_KEY_ID }},type=PLAINTEXT \
                 name=KAIZEN_SECRET_ACCESS_KEY,value=${{ secrets.KAIZEN_SECRET_ACCESS_KEY }},type=PLAINTEXT \
                 name=KAIZEN_SESSION_TOKEN,value=${{ secrets.KAIZEN_SESSION_TOKEN }},type=PLAINTEXT \
-            --query 'build.id' \
-            --output text)
-          
-          echo "Started CodeBuild build: $BUILD_ID"
-          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for Overlay Build to Complete
-        env:
-          BUILD_ID: ${{ steps.build_overlay.outputs.build_id }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-        run: |
-          set -euo pipefail
-          echo "⏳ Waiting for overlay build: $BUILD_ID"
-          
-          while true; do
-            STATUS=$(aws codebuild batch-get-builds \
-              --ids "$BUILD_ID" \
-              --query 'builds[0].buildStatus' \
-              --output text)
-            
-            echo "$(date -u +%FT%TZ) Build status: $STATUS"
-            
-            case "$STATUS" in
-              SUCCEEDED) 
-                echo "✅ Overlay build completed successfully"
-                break
-                ;;
-              FAILED|FAULT|STOPPED|TIMED_OUT) 
-                echo "❌ Build failed with status: $STATUS" >&2
-                aws codebuild batch-get-builds --ids "$BUILD_ID" \
-                  --query 'builds[0].phases[?phaseStatus==`FAILED`].[phaseType, contexts[0].message]' \
-                  --output table || true
-                exit 1
-                ;;
-              IN_PROGRESS) 
-                sleep 15
-                ;;
-              *) 
-                echo "Unknown status: $STATUS"
-                sleep 15
-                ;;
-            esac
-          done
-
-      # Stage 4: Run Kaizen vLLM smoke test
-      - name: Start CodeBuild - Kaizen vLLM Smoke Test
-        id: kaizen_test
-        run: |
-          set -euo pipefail
-          echo "🧪 Stage 4: Running Kaizen vLLM smoke test with image tag $IMAGE_TAG"
-          
-          BUILD_ID=$(aws codebuild start-build \
-            --project-name kaizen-poc \
-            --source-version ${{ env.IMAGE_TAG }} \
-            --buildspec-override buildspec-stage4-inspect.yml \
-            --environment-variables-override \
-                name=IMAGE_TAG,value=${{ env.IMAGE_TAG }},type=PLAINTEXT \
-                name=AWS_REGION,value=${{ secrets.AWS_REGION }},type=PLAINTEXT \
-                name=ADMIN_AWS_ACCESS_KEY_ID,value=${{ secrets.AWS_ACCESS_KEY_ID }},type=PLAINTEXT \
-                name=ADMIN_AWS_SECRET_ACCESS_KEY,value=${{ secrets.AWS_SECRET_ACCESS_KEY }},type=PLAINTEXT \
-                name=ADMIN_AWS_SESSION_TOKEN,value=${{ secrets.AWS_SESSION_TOKEN }},type=PLAINTEXT \
-                name=KAIZEN_ECR_URI,value=${{ secrets.KAIZEN_ECR_URI }},type=PLAINTEXT \
                 name=TP_SIZE,value=16,type=PLAINTEXT \
             --query 'build.id' \
             --output text)
           
           echo "Started CodeBuild build: $BUILD_ID"
-          echo "test_build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+          echo "📎 View logs: https://console.aws.amazon.com/codesuite/codebuild/projects/kaizen-poc/build/$BUILD_ID"
 
-      - name: Wait for Kaizen Test to Complete
+      - name: Wait for Pipeline to Complete
         env:
-          BUILD_ID: ${{ steps.kaizen_test.outputs.test_build_id }}
+          BUILD_ID: ${{ steps.unified_build.outputs.build_id }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           set -euo pipefail
-          echo "⏳ Waiting for Kaizen test: $BUILD_ID"
+          echo "⏳ Waiting for unified pipeline: $BUILD_ID"
           
-          # Extended timeout for Kaizen tests (up to 20 minutes)
-          MAX_WAIT_TIME=1200
+          # Extended timeout for build + test (up to 30 minutes)
+          MAX_WAIT_TIME=1800
           ELAPSED_TIME=0
           
           while [ $ELAPSED_TIME -lt $MAX_WAIT_TIME ]; do
-            STATUS=$(aws codebuild batch-get-builds \
+            BUILD_INFO=$(aws codebuild batch-get-builds \
               --ids "$BUILD_ID" \
-              --query 'builds[0].buildStatus' \
-              --output text)
+              --query 'builds[0].[buildStatus,phases[?phaseType==`BUILD`].phaseStatus | [0],phases[?phaseType==`POST_BUILD`].phaseStatus | [0]]' \
+              --output json)
             
-            echo "$(date -u +%FT%TZ) Test status: $STATUS (elapsed: ${ELAPSED_TIME}s)"
+            STATUS=$(echo "$BUILD_INFO" | jq -r '.[0]')
+            BUILD_PHASE=$(echo "$BUILD_INFO" | jq -r '.[1] // "PENDING"')
+            TEST_PHASE=$(echo "$BUILD_INFO" | jq -r '.[2] // "PENDING"')
+            
+            echo "$(date -u +%FT%TZ) Status: $STATUS | Build: $BUILD_PHASE | Test: $TEST_PHASE (elapsed: ${ELAPSED_TIME}s)"
             
             case "$STATUS" in
               SUCCEEDED) 
-                echo "✅ Kaizen test completed successfully"
+                echo "✅ Pipeline completed successfully!"
+                echo "   - Image built and pushed to: ${{ secrets.KAIZEN_ECR_URI }}:${{ env.IMAGE_TAG }}"
+                echo "   - Kaizen test passed"
                 exit 0
                 ;;
               FAILED|FAULT|STOPPED|TIMED_OUT) 
-                echo "❌ Test failed with status: $STATUS" >&2
+                echo "❌ Pipeline failed with status: $STATUS" >&2
                 
-                # Get detailed error information
-                aws codebuild batch-get-builds --ids "$BUILD_ID" \
+                # Get phase-specific failure info
+                FAILED_PHASES=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
                   --query 'builds[0].phases[?phaseStatus==`FAILED`].[phaseType, contexts[0].message]' \
-                  --output table || true
+                  --output table)
                 
-                # Try to get logs
+                if [ -n "$FAILED_PHASES" ]; then
+                  echo "Failed phases:"
+                  echo "$FAILED_PHASES"
+                fi
+                
+                # Try to get last 100 lines of logs
                 LOG_GROUP=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
                   --query 'builds[0].logs.groupName' --output text)
                 LOG_STREAM=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
                   --query 'builds[0].logs.streamName' --output text)
                 
                 if [ "$LOG_GROUP" != "None" ] && [ "$LOG_STREAM" != "None" ]; then
-                  echo "📋 Last 50 lines of build logs:"
-                  aws logs tail "$LOG_GROUP" --log-stream-name "$LOG_STREAM" --max-items 50 || true
+                  echo "📋 Last 100 lines of build logs:"
+                  aws logs tail "$LOG_GROUP" --log-stream-name "$LOG_STREAM" --max-items 100 || true
                 fi
                 
                 exit 1
@@ -181,8 +131,32 @@ jobs:
             esac
           done
           
-          echo "❌ Test timed out after ${MAX_WAIT_TIME} seconds" >&2
+          echo "❌ Pipeline timed out after ${MAX_WAIT_TIME} seconds" >&2
           exit 1
+
+      # Download artifacts if successful
+      - name: Download Build Artifacts
+        if: success()
+        run: |
+          BUILD_ID="${{ steps.unified_build.outputs.build_id }}"
+          
+          # Get S3 location of artifacts
+          ARTIFACTS_LOCATION=$(aws codebuild batch-get-builds \
+            --ids "$BUILD_ID" \
+            --query 'builds[0].artifacts.location' \
+            --output text)
+          
+          if [ "$ARTIFACTS_LOCATION" != "None" ] && [ -n "$ARTIFACTS_LOCATION" ]; then
+            echo "📦 Downloading artifacts from: $ARTIFACTS_LOCATION"
+            aws s3 cp "$ARTIFACTS_LOCATION" ./artifacts.zip || true
+            if [ -f ./artifacts.zip ]; then
+              unzip -o ./artifacts.zip || true
+              if [ -f image-detail-1229.txt ]; then
+                echo "Image details:"
+                cat image-detail-1229.txt
+              fi
+            fi
+          fi
 
       # Add PR comment with results
       - name: Comment PR with Results
@@ -191,29 +165,22 @@ jobs:
         with:
           script: |
             const imageTag = '${{ env.IMAGE_TAG }}';
-            const overlayBuildId = '${{ steps.build_overlay.outputs.build_id }}';
-            const testBuildId = '${{ steps.kaizen_test.outputs.test_build_id }}';
-            const overlaySuccess = '${{ steps.build_overlay.outcome }}' === 'success';
-            const testSuccess = '${{ steps.kaizen_test.outcome }}' === 'success';
+            const buildId = '${{ steps.unified_build.outputs.build_id }}';
+            const success = '${{ steps.unified_build.outcome }}' === 'success';
             
-            let status = '❌ Failed';
-            if (overlaySuccess && testSuccess) {
-              status = '✅ Passed';
-            } else if (overlaySuccess && !testSuccess) {
-              status = '⚠️ Build succeeded, test failed';
-            }
-            
-            const body = `## Kaizen Test Results ${status}
+            const body = `## Kaizen Test Results ${success ? '✅ Passed' : '❌ Failed'}
             
             **Image Tag:** \`${imageTag}\`
+            **CodeBuild Job:** [\`${buildId}\`](https://console.aws.amazon.com/codesuite/codebuild/projects/kaizen-poc/build/${buildId})
             
-            ### Build Summary
-            - **Overlay Build:** ${overlaySuccess ? '✅ Success' : '❌ Failed'} (Build ID: \`${overlayBuildId}\`)
-            - **Kaizen Test:** ${testSuccess ? '✅ Success' : '❌ Failed'} (Build ID: \`${testBuildId}\`)
+            ### Pipeline Status
+            - **Docker Build:** ${success ? '✅ Success' : '❌ Check logs'}
+            - **Image Push:** ${success ? '✅ Success' : '❌ Check logs'}
+            - **Kaizen Test:** ${success ? '✅ Success' : '❌ Check logs'}
             
-            ${overlaySuccess ? `**Kaizen Image:** \`${{ secrets.KAIZEN_ECR_URI }}:${imageTag}\`` : ''}
+            ${success ? `**Kaizen Image:** \`${{ secrets.KAIZEN_ECR_URI }}:${imageTag}\`` : ''}
             
-            View detailed logs in [AWS CodeBuild Console](https://console.aws.amazon.com/codesuite/codebuild/projects/kaizen-poc/history)`;
+            View detailed logs in the [CodeBuild Console](https://console.aws.amazon.com/codesuite/codebuild/projects/kaizen-poc/build/${buildId})`;
             
             // Find existing comment
             const { data: comments } = await github.rest.issues.listComments({
