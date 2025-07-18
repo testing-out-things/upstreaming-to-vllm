@@ -8,8 +8,15 @@ env:
 phases:
   install:
     commands:
-      - set -euo pipefail
-      - curl -fsSL "$KAIZEN_CLI_URL" -o kaizen && chmod +x kaizen
+      - |
+        set -euo pipefail
+        echo "▶ Downloading Kaizen CLI from $KAIZEN_CLI_S3"
+        aws s3 cp "$KAIZEN_CLI_S3" ./kaizen
+        if [[ ! -s ./kaizen ]]; then
+          echo "ERROR -> Kaizen CLI download failed" >&2
+          exit 1
+        fi
+        chmod +x ./kaizen
 
   pre_build:
     commands:
