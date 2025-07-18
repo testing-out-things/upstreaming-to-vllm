@@ -1,36 +1,82 @@
-# buildspec-full.yml  (replaces separate stage-3 / stage-4 files)
+# buildspec-full.yml  (overlay + Kaizen smoke)
 version: 0.2
-env:
-  shell: bash
+
 phases:
   install:
-    runtime-versions: { docker: 24 }
-    commands:
-      - set -euo pipefail
-      - curl -fsSL "$KAIZEN_CLI_URL" -o kaizen && chmod +x kaizen
+    commands: |
+      set -euo pipefail
+      echo "▶ download Kaizen CLI"
+      : "${KAIZEN_CLI_S3:?KAIZEN_CLI_S3 env var missing}"
+      aws s3 cp "$KAIZEN_CLI_S3" ./kaizen
+      chmod +x ./kaizen
+      echo "✔ Kaizen CLI ready"
+
   pre_build:
-    commands:
-      - set -euo pipefail
-      - aws ecr get-login-password --region "$AWS_REGION" | docker login -u AWS --password-stdin "$ECR_REGISTRY"
-      - IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION}"
-      - echo "Using BASE_IMAGE=$BASE_IMAGE"
+    commands: |
+      set -euo pipefail
+      # Tag that identifies THIS PR’s commit
+      IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION}"
+      echo "IMAGE_TAG=$IMAGE_TAG"
+
+      # ----- pull newest base image from 844 ---------------------------------
+      SRC_REPO="${ECR_URI#*/}"                    # upstreaming-to-vllm-test
+      echo "Querying latest pushed tag in $SRC_REPO (844)…"
+      export AWS_ACCESS_KEY_ID="$ADMIN_AWS_ACCESS_KEY_ID"
+      export AWS_SECRET_ACCESS_KEY="$ADMIN_AWS_SECRET_ACCESS_KEY"
+      export AWS_SESSION_TOKEN="$ADMIN_AWS_SESSION_TOKEN"
+      aws ecr get-login-password --region "$AWS_REGION" \
+        | docker login -u AWS --password-stdin "$ECR_REGISTRY"
+
+      LATEST_BASE_TAG="$(aws ecr describe-images \
+        --repository-name "$SRC_REPO" \
+        --query 'reverse(sort_by(imageDetails[?length(imageTags)!=`0`], &imagePushedAt))[0].imageTags[0]' \
+        --output text)"
+      [ "$LATEST_BASE_TAG" != "None" ] || { echo "No tagged images!"; exit 1; }
+
+      BASE_IMAGE="$ECR_REGISTRY/$SRC_REPO:$LATEST_BASE_TAG"
+      echo "BASE_IMAGE=$BASE_IMAGE"
+
   build:
-    commands:
-      - docker build --build-arg BASE_IMAGE="$BASE_IMAGE" -f Dockerfile.rebase -t overlay:"$IMAGE_TAG" .
+    commands: |
+      set -euo pipefail
+      echo "▶ docker build overlay"
+      docker build --build-arg BASE_IMAGE="$BASE_IMAGE" \
+                   -f Dockerfile.rebase \
+                   -t overlay:"$IMAGE_TAG" .
+      echo "✔ build complete"
+
   post_build:
-    commands:
-      - set -euo pipefail
-      # ── push overlay to Kaizen (1229) ────────────────────────────────────────────
-      - docker tag overlay:"$IMAGE_TAG" "$KAIZEN_ECR_URI:$IMAGE_TAG"
-      - aws ecr get-login-password --region "$KAIZEN_REGION" | docker login -u AWS --password-stdin "$KAIZEN_ECR_REGISTRY"
-      - docker push "$KAIZEN_ECR_URI:$IMAGE_TAG"
-      # ── launch Kaizen test & stream logs; non-zero exit => build fails ──────────
-      - ./kaizen start-workload \
-          --image "$KAIZEN_ECR_URI:$IMAGE_TAG" \
-          --instanceType "$KAIZEN_INSTANCE_TYPE" \
-          --nodeCount "$KAIZEN_NODE_COUNT" \
-          --command "$KAIZEN_COMMAND" \
-          --wait-for-completion=true \
-          --tail-logs
+    commands: |
+      set -euo pipefail
+      # ----- push overlay into 1229 ECR that Kaizen can read -----------------
+      echo "▶ push overlay to 1229"
+      docker tag overlay:"$IMAGE_TAG"  "$KAIZEN_ECR_URI:$IMAGE_TAG"
+      export AWS_ACCESS_KEY_ID="$KAIZEN_ACCESS_KEY_ID"
+      export AWS_SECRET_ACCESS_KEY="$KAIZEN_SECRET_ACCESS_KEY"
+      export AWS_SESSION_TOKEN="$KAIZEN_SESSION_TOKEN"
+      aws ecr get-login-password --region "$KAIZEN_REGION" \
+        | docker login -u AWS --password-stdin "$KAIZEN_ECR_REGISTRY"
+      docker push "$KAIZEN_ECR_URI:$IMAGE_TAG"
+
+      # ----- launch workload and stream logs ---------------------------------
+      echo "▶ launch Kaizen workload"
+      KAIZEN_CMD="timeout 600s python3 -m vllm.entrypoints.openai.api_server \
+        --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+        --max-num-seqs 1 \
+        --max-model-len 128 \
+        --tensor-parallel-size ${TP_SIZE:-16} \
+        --device neuron \
+        --use-v2-block-manager \
+        --override-neuron-config '{}' \
+        --port 8000"
+
+      ./kaizen start-workload \
+        --image "$KAIZEN_ECR_URI:$IMAGE_TAG" \
+        --instanceType "${KAIZEN_INSTANCE_TYPE:-trn1.32xlarge}" \
+        --nodeCount "${KAIZEN_NODE_COUNT:-1}" \
+        --command "$KAIZEN_CMD" \
+        --wait-for-completion=true \
+        --tail-logs
+
 artifacts:
-  files: []      # we just need the logs, not image details
+  files: []   # nothing to publish – logs already printed to CloudWatch/Action
