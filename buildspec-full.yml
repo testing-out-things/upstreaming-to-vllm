@@ -15,37 +15,24 @@ phases:
     commands:
       - set -euo pipefail
       - echo "▶ Logging in to source ECR"
-      - aws ecr get-login-password --region "$AWS_REGION" \
-        | docker login -u AWS --password-stdin "$ECR_REGISTRY"
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login -u AWS --password-stdin "$ECR_REGISTRY"
       - echo "Using BASE_IMAGE=$BASE_IMAGE"
       - echo "Overlay tag  : $IMAGE_TAG"
 
   build:
     commands:
       - echo "▶ Building overlay image"
-      - docker build \
-          --build-arg BASE_IMAGE="$BASE_IMAGE" \
-          -f Dockerfile.rebase \
-          -t overlay:"$IMAGE_TAG" .
+      - docker build --build-arg BASE_IMAGE="$BASE_IMAGE" -f Dockerfile.rebase -t overlay:"$IMAGE_TAG" .
 
   post_build:
     commands:
       - set -euo pipefail
       - echo "▶ Pushing overlay to Kaizen ECR"
       - docker tag overlay:"$IMAGE_TAG" "$KAIZEN_ECR_URI:$IMAGE_TAG"
-      - aws ecr get-login-password --region "$KAIZEN_REGION" \
-        | docker login -u AWS --password-stdin "$KAIZEN_ECR_REGISTRY"
+      - aws ecr get-login-password --region "$KAIZEN_REGION" | docker login -u AWS --password-stdin "$KAIZEN_ECR_REGISTRY"
       - docker push "$KAIZEN_ECR_URI:$IMAGE_TAG"
-
       - echo "▶ Launching Kaizen inspect workload"
-      - |
-        ./kaizen start-workload \
-          --image "$KAIZEN_ECR_URI:$IMAGE_TAG" \
-          --instanceType "$KAIZEN_INSTANCE_TYPE" \
-          --nodeCount   "$KAIZEN_NODE_COUNT" \
-          --command     "$KAIZEN_COMMAND" \
-          --wait-for-completion=true \
-          --tail-logs
+      - ./kaizen start-workload --image "$KAIZEN_ECR_URI:$IMAGE_TAG" --instanceType "$KAIZEN_INSTANCE_TYPE" --nodeCount "$KAIZEN_NODE_COUNT" --command "$KAIZEN_COMMAND" --wait-for-completion=true --tail-logs
 
 artifacts:
-  files: []     # nothing to export; CodeBuild log stream is enough
+  files: []   # CodeBuild logs are enough
