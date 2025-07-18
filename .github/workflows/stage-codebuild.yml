@@ -1,73 +1,92 @@
-name: Stage-3 Overlay (latest 844 base → Kaizen ECR)
-
+name: PR Build + Kaizen Test
 on:
-  workflow_dispatch:
-  pull_request:
-
-env:
-  IMAGE_TAG: ${{ github.event.pull_request.head.sha || github.sha }}
+  pull_request: {}
+  workflow_dispatch: {}
 
 jobs:
-  build-overlay:
+  kaizen:
     runs-on: ubuntu-latest
+    env:
+      # build-account (844) creds
+      AWS_REGION:             ${{ secrets.AWS_REGION }}
+      AWS_ACCESS_KEY_ID:      ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY:  ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN:      ${{ secrets.AWS_SESSION_TOKEN }}
+
+      ECR_REGISTRY:           ${{ secrets.ECR_REGISTRY }}
+      ECR_URI:                ${{ secrets.ECR_URI }}
+      BASE_IMAGE:             ${{ secrets.BASE_IMAGE }}
+
+      # kaizen / test account (1229) – push & run
+      KAIZEN_REGION:          ${{ secrets.KAIZEN_REGION }}
+      KAIZEN_ECR_REGISTRY:    ${{ secrets.KAIZEN_ECR_REGISTRY }}
+      KAIZEN_ECR_URI:         ${{ secrets.KAIZEN_ECR_URI }}
+      KAIZEN_ACCESS_KEY_ID:      ${{ secrets.KAIZEN_ACCESS_KEY_ID }}
+      KAIZEN_SECRET_ACCESS_KEY:  ${{ secrets.KAIZEN_SECRET_ACCESS_KEY }}
+      KAIZEN_SESSION_TOKEN:      ${{ secrets.KAIZEN_SESSION_TOKEN }}
+
+      KAIZEN_CLI_URL:         ${{ secrets.KAIZEN_CLI_URL }}
+      KAIZEN_INSTANCE_TYPE:   trn1.32xlarge
+      KAIZEN_NODE_COUNT:      "1"
+      KAIZEN_COMMAND: >-
+        python -m vllm.entrypoints.openai.api_server
+        --model TinyLlama/TinyLlama-1.1B-Chat-v1.0
+        --max-num-seqs 1
+        --max-model-len 128
+        --tensor-parallel-size 16
+        --device neuron
 
     steps:
       - uses: actions/checkout@v4
 
-      # 844 creds to invoke CodeBuild + pull base
-      - name: Configure AWS creds (844)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region:            ${{ secrets.AWS_REGION }}
-
-      - name: Start CodeBuild (overlay)
-        id: start_build
+      - name: Start CodeBuild
+        id: start
         run: |
           set -euo pipefail
-          echo "Overlay Stage-3: building image tag $IMAGE_TAG from latest 844 base"
           BUILD_ID=$(aws codebuild start-build \
-            --project-name kaizen-poc \
-            --source-version ${{ env.IMAGE_TAG }} \
-            --buildspec-override buildspec-stage3-overlay.yml \
-            --environment-variables-override \
-                name=IMAGE_TAG,value=${{ env.IMAGE_TAG }},type=PLAINTEXT \
-                name=AWS_REGION,value=${{ secrets.AWS_REGION }},type=PLAINTEXT \
-                name=ECR_REGISTRY,value=${{ secrets.ECR_REGISTRY }},type=PLAINTEXT \
-                name=ECR_URI,value=${{ secrets.ECR_URI }},type=PLAINTEXT \
-                name=ADMIN_AWS_ACCESS_KEY_ID,value=${{ secrets.AWS_ACCESS_KEY_ID }},type=PLAINTEXT \
-                name=ADMIN_AWS_SECRET_ACCESS_KEY,value=${{ secrets.AWS_SECRET_ACCESS_KEY }},type=PLAINTEXT \
-                name=ADMIN_AWS_SESSION_TOKEN,value=${{ secrets.AWS_SESSION_TOKEN }},type=PLAINTEXT \
-                name=KAIZEN_REGION,value=${{ secrets.KAIZEN_REGION }},type=PLAINTEXT \
-                name=KAIZEN_ECR_REGISTRY,value=${{ secrets.KAIZEN_ECR_REGISTRY }},type=PLAINTEXT \
-                name=KAIZEN_ECR_URI,value=${{ secrets.KAIZEN_ECR_URI }},type=PLAINTEXT \
-                name=KAIZEN_ACCESS_KEY_ID,value=${{ secrets.KAIZEN_ACCESS_KEY_ID }},type=PLAINTEXT \
-                name=KAIZEN_SECRET_ACCESS_KEY,value=${{ secrets.KAIZEN_SECRET_ACCESS_KEY }},type=PLAINTEXT \
-                name=KAIZEN_SESSION_TOKEN,value=${{ secrets.KAIZEN_SESSION_TOKEN }},type=PLAINTEXT \
-            --query 'build.id' \
-            --output text)
-          echo "Started CodeBuild build: $BUILD_ID"
+              --project-name kaizen-poc \
+              --source-version "${{ github.sha }}" \
+              --buildspec-override buildspec-full.yml \
+              --environment-variables-override \
+                  name=AWS_REGION,value=${AWS_REGION},type=PLAINTEXT \
+                  name=ECR_REGISTRY,value=${ECR_REGISTRY},type=PLAINTEXT \
+                  name=ECR_URI,value=${ECR_URI},type=PLAINTEXT \
+                  name=BASE_IMAGE,value=${BASE_IMAGE},type=PLAINTEXT \
+                  name=KAIZEN_REGION,value=${KAIZEN_REGION},type=PLAINTEXT \
+                  name=KAIZEN_ECR_REGISTRY,value=${KAIZEN_ECR_REGISTRY},type=PLAINTEXT \
+                  name=KAIZEN_ECR_URI,value=${KAIZEN_ECR_URI},type=PLAINTEXT \
+                  name=KAIZEN_ACCESS_KEY_ID,value=${KAIZEN_ACCESS_KEY_ID},type=PLAINTEXT \
+                  name=KAIZEN_SECRET_ACCESS_KEY,value=${KAIZEN_SECRET_ACCESS_KEY},type=PLAINTEXT \
+                  name=KAIZEN_SESSION_TOKEN,value=${KAIZEN_SESSION_TOKEN},type=PLAINTEXT \
+                  name=KAIZEN_INSTANCE_TYPE,value=${KAIZEN_INSTANCE_TYPE},type=PLAINTEXT \
+                  name=KAIZEN_NODE_COUNT,value=${KAIZEN_NODE_COUNT},type=PLAINTEXT \
+                  name=KAIZEN_COMMAND,value="${KAIZEN_COMMAND}",type=PLAINTEXT \
+                  name=KAIZEN_CLI_URL,value=${KAIZEN_CLI_URL},type=PLAINTEXT \
+              --query 'build.id' --output text)
           echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for CodeBuild to finish
+      - name: Wait & pull CloudWatch logs
         env:
-          BUILD_ID:   ${{ steps.start_build.outputs.build_id }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
+          BUILD_ID: ${{ steps.start.outputs.build_id }}
         run: |
           set -euo pipefail
-          echo "Waiting for CodeBuild build: $BUILD_ID"
+          # Poll for terminal state
           while true; do
-            STATUS=$(aws codebuild batch-get-builds \
-              --ids "$BUILD_ID" \
-              --query 'builds[0].buildStatus' \
-              --output text)
-            echo "$(date -u +%FT%TZ) CodeBuild status: $STATUS"
-            case "$STATUS" in
-              SUCCEEDED) exit 0;;
-              FAILED|FAULT|STOPPED|TIMED_OUT) echo "Build failed: $STATUS" >&2; exit 1;;
-              IN_PROGRESS) sleep 15;;
-              *) sleep 15;;
-            esac
+            STATUS=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --query 'builds[0].buildStatus' --output text)
+            echo "Current status: $STATUS"
+            [[ "$STATUS" == IN_PROGRESS ]] && sleep 30 || break
           done
+          # Fetch CW logs to file
+          LOG_GROUP=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --query 'builds[0].logs.groupName' --output text)
+          LOG_STREAM=$(aws codebuild batch-get-builds --ids "$BUILD_ID" --query 'builds[0].logs.streamName' --output text)
+          aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "$LOG_STREAM" \
+               --query 'events[].message' --output text > codebuild.log || true
+          echo "::group::CodeBuild + Kaizen logs"; cat codebuild.log; echo "::endgroup::"
+          # Fail the step if CodeBuild failed
+          [[ "$STATUS" == SUCCEEDED ]] || { echo "CodeBuild failed ($STATUS)"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: codebuild-kaizen-log-${{ github.sha }}
+          path: codebuild.log
