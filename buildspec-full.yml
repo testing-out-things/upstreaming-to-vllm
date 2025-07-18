@@ -1,45 +1,78 @@
-# buildspec-full.yml
 version: 0.2
 
 env:
-  variables:
-    IMAGE_TAG: "$CODEBUILD_RESOLVED_SOURCE_VERSION"
+  shell: bash            # run every phase in bash
 
 phases:
   install:
     commands:
       - |
         set -euo pipefail
+        #---------------------------------------------------------------------
+        # Download Kaizen CLI binary from S3
+        # KAIZEN_CLI_S3 must be supplied via CodeBuild env-var overrides
+        # or project-level environment variables / secrets.
+        #---------------------------------------------------------------------
+        : "${KAIZEN_CLI_S3:?KAIZEN_CLI_S3 env-var missing – please pass the S3 path to the Kaizen CLI}"
         echo "▶ Downloading Kaizen CLI from $KAIZEN_CLI_S3"
         aws s3 cp "$KAIZEN_CLI_S3" ./kaizen
-        if [[ ! -s ./kaizen ]]; then
-          echo "ERROR -> Kaizen CLI download failed" >&2
-          exit 1
-        fi
         chmod +x ./kaizen
+        echo "✔ Kaizen CLI ready"
 
   pre_build:
     commands:
-      - set -euo pipefail
-      - echo "▶ Logging in to source ECR"
-      - aws ecr get-login-password --region "$AWS_REGION" | docker login -u AWS --password-stdin "$ECR_REGISTRY"
-      - echo "Using BASE_IMAGE=$BASE_IMAGE"
-      - echo "Overlay tag -> $IMAGE_TAG"
+      - |
+        set -euo pipefail
+        echo "▶ Authenticating to build ECR ($ECR_REGISTRY)"
+        aws ecr get-login-password --region "$AWS_REGION" \
+          | docker login -u AWS --password-stdin "$ECR_REGISTRY"
+
+        # Tag derived from the exact commit being tested
+        export IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION}"
+        echo "▶ Image tag   : $IMAGE_TAG"
+        echo "▶ Base image  : $BASE_IMAGE"
 
   build:
     commands:
-      - echo "▶ Building overlay image"
-      - docker build --build-arg BASE_IMAGE="$BASE_IMAGE" -f Dockerfile.rebase -t overlay:"$IMAGE_TAG" .
+      - |
+        set -euo pipefail
+        echo "▶ Building overlay image"
+        docker build \
+          --build-arg BASE_IMAGE="$BASE_IMAGE" \
+          -f Dockerfile.rebase \
+          -t overlay:"$IMAGE_TAG" \
+          .
+        echo "✔ Build finished"
 
   post_build:
     commands:
-      - set -euo pipefail
-      - echo "▶ Pushing overlay to Kaizen ECR"
-      - docker tag overlay:"$IMAGE_TAG" "$KAIZEN_ECR_URI:$IMAGE_TAG"
-      - aws ecr get-login-password --region "$KAIZEN_REGION" | docker login -u AWS --password-stdin "$KAIZEN_ECR_REGISTRY"
-      - docker push "$KAIZEN_ECR_URI:$IMAGE_TAG"
-      - echo "▶ Launching Kaizen inspect workload"
-      - ./kaizen start-workload --image "$KAIZEN_ECR_URI:$IMAGE_TAG" --instanceType "$KAIZEN_INSTANCE_TYPE" --nodeCount "$KAIZEN_NODE_COUNT" --command "$KAIZEN_COMMAND" --wait-for-completion=true --tail-logs
+      - |
+        set -euo pipefail
+
+        #-------------------------------------------------------------------
+        # Push overlay into the **Kaizen** ECR account
+        #-------------------------------------------------------------------
+        echo "▶ Tagging overlay for Kaizen ECR"
+        docker tag overlay:"$IMAGE_TAG" "$KAIZEN_ECR_URI:$IMAGE_TAG"
+
+        echo "▶ Authenticating to Kaizen ECR ($KAIZEN_ECR_REGISTRY)"
+        aws ecr get-login-password --region "$KAIZEN_REGION" \
+          | docker login -u AWS --password-stdin "$KAIZEN_ECR_REGISTRY"
+
+        echo "▶ Pushing image to Kaizen ECR"
+        docker push "$KAIZEN_ECR_URI:$IMAGE_TAG"
+
+        #-------------------------------------------------------------------
+        # Launch workload and stream logs; non-zero exit → build FAILURE
+        #-------------------------------------------------------------------
+        echo "▶ Launching Kaizen workload"
+        ./kaizen start-workload \
+          --image "$KAIZEN_ECR_URI:$IMAGE_TAG" \
+          --instanceType "$KAIZEN_INSTANCE_TYPE" \
+          --nodeCount "$KAIZEN_NODE_COUNT" \
+          --command "$KAIZEN_COMMAND" \
+          --wait-for-completion=true \
+          --tail-logs
 
 artifacts:
-  files: []   # CodeBuild logs are enough
+  files: []              # we only need streamed logs; no artifacts
