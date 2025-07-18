@@ -1,0 +1,112 @@
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - |
+        set -e
+        echo "▶ Starting unified build and test pipeline"
+        
+        # Download Kaizen CLI for later use
+        echo "▶ Downloading Kaizen CLI"
+        aws s3 cp s3://navyadha-multi-lora-trn2/kaizen ./kaizen
+        chmod +x ./kaizen
+
+  pre_build:
+    commands:
+      - |
+        set -e
+        IMAGE_TAG=${IMAGE_TAG:-$CODEBUILD_RESOLVED_SOURCE_VERSION}
+        echo "Using IMAGE_TAG=$IMAGE_TAG"
+
+        # Repo name in 844 (strip registry from ECR_URI)
+        SRC_REPO="${ECR_URI#*/}"
+        echo "Source base repo (844) = $SRC_REPO"
+
+        echo "▶ Login to 844 ECR (pull base): $ECR_REGISTRY"
+        # Use 844 admin creds so we can pull private base image layers
+        export AWS_ACCESS_KEY_ID="$ADMIN_AWS_ACCESS_KEY_ID"
+        export AWS_SECRET_ACCESS_KEY="$ADMIN_AWS_SECRET_ACCESS_KEY"
+        export AWS_SESSION_TOKEN="$ADMIN_AWS_SESSION_TOKEN"
+        aws ecr get-login-password --region "$AWS_REGION" \
+          | docker login -u AWS --password-stdin "$ECR_REGISTRY"
+
+        # Find most recent *tagged* image by push time
+        LATEST_BASE_TAG=$(aws ecr describe-images --repository-name "$SRC_REPO" \
+          --query 'reverse(sort_by(imageDetails[?length(imageTags)!=`0`], &imagePushedAt))[0].imageTags[0]' \
+          --output text)
+        if [ -z "$LATEST_BASE_TAG" ] || [ "$LATEST_BASE_TAG" = "None" ]; then
+          echo "ERROR: Could not resolve latest base tag in $SRC_REPO" >&2
+          exit 1
+        fi
+        BASE_IMAGE="$ECR_REGISTRY/$SRC_REPO:$LATEST_BASE_TAG"
+        echo "Resolved BASE_IMAGE=$BASE_IMAGE"
+
+  build:
+    commands:
+      - |
+        set -e
+        IMAGE_TAG=${IMAGE_TAG:-$CODEBUILD_RESOLVED_SOURCE_VERSION}
+        echo "▶ Stage 3: Build overlay image from base=$BASE_IMAGE tag=$IMAGE_TAG"
+        docker build --build-arg BASE_IMAGE="$BASE_IMAGE" -f Dockerfile.rebase -t overlay-build:"$IMAGE_TAG" .
+
+  post_build:
+    commands:
+      - |
+        set -e
+        IMAGE_TAG=${IMAGE_TAG:-$CODEBUILD_RESOLVED_SOURCE_VERSION}
+
+        # Tag overlay for Kaizen (1229)
+        echo "▶ Tag overlay for Kaizen: $KAIZEN_ECR_URI:$IMAGE_TAG"
+        docker tag overlay-build:"$IMAGE_TAG" "$KAIZEN_ECR_URI:$IMAGE_TAG"
+
+        # Login to 1229 and push
+        echo "▶ Login to 1229 ECR: $KAIZEN_ECR_REGISTRY"
+        export AWS_ACCESS_KEY_ID="$KAIZEN_ACCESS_KEY_ID"
+        export AWS_SECRET_ACCESS_KEY="$KAIZEN_SECRET_ACCESS_KEY"
+        export AWS_SESSION_TOKEN="$KAIZEN_SESSION_TOKEN"
+        aws ecr get-login-password --region "${KAIZEN_REGION:-$AWS_REGION}" \
+          | docker login -u AWS --password-stdin "$KAIZEN_ECR_REGISTRY"
+
+        echo "▶ Push overlay to 1229"
+        docker push "$KAIZEN_ECR_URI:$IMAGE_TAG"
+
+        echo "KAIZEN_IMAGE_URI=$KAIZEN_ECR_URI:$IMAGE_TAG" | tee image-detail-1229.txt
+        
+        # ===== STAGE 4: Run Kaizen Test =====
+        echo ""
+        echo "▶ Stage 4: Launch Kaizen vLLM server smoke test"
+        TP_SIZE=${TP_SIZE:-16}
+        
+        # Restore 844 admin creds before calling Kaizen (required)
+        export AWS_ACCESS_KEY_ID="$ADMIN_AWS_ACCESS_KEY_ID"
+        export AWS_SECRET_ACCESS_KEY="$ADMIN_AWS_SECRET_ACCESS_KEY"
+        export AWS_SESSION_TOKEN="$ADMIN_AWS_SESSION_TOKEN"
+
+        # Build the workload command (single line)
+        KAIZEN_RUN_CMD="timeout 600s python3 -m vllm.entrypoints.openai.api_server \
+          --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+          --max-num-seqs 1 \
+          --max-model-len 128 \
+          --tensor-parallel-size ${TP_SIZE} \
+          --device neuron \
+          --use-v2-block-manager \
+          --override-neuron-config '{}' \
+          --port 8000"
+
+        echo "▶ Workload command:"
+        echo "${KAIZEN_RUN_CMD}"
+
+        echo "▶ Running Kaizen test..."
+        ./kaizen start-workload \
+          --image "$KAIZEN_ECR_URI:$IMAGE_TAG" \
+          --instanceType trn1.32xlarge \
+          --nodeCount 1 \
+          --command "${KAIZEN_RUN_CMD}" \
+          --tail-logs
+
+        echo "✅ Pipeline completed successfully!"
+
+artifacts:
+  files:
+    - image-detail-1229.txt
