@@ -93,8 +93,13 @@ phases:
         #   --use-v2-block-manager \
         #   --override-neuron-config '{}' \
         #   --port 8000"
-
-        KAIZEN_RUN_CMD="cd /workspace/vllm && python3 examples/offline_inference/neuron.py"
+        KAIZEN_RUN_CMD="cd /workspace/vllm && bash -c '
+          export PYTHONUNBUFFERED=1
+          echo \"Starting test...\"
+          python3 examples/offline_inference/neuron.py 2>&1
+          echo \"Test completed, waiting for logs...\"
+          sleep 20'
+          "
 
         echo "▶ Workload command:"
         echo "${KAIZEN_RUN_CMD}"
