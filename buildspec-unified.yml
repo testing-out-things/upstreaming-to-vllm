@@ -83,16 +83,23 @@ phases:
         export AWS_SECRET_ACCESS_KEY="$ADMIN_AWS_SECRET_ACCESS_KEY"
         export AWS_SESSION_TOKEN="$ADMIN_AWS_SESSION_TOKEN"
 
-        # Build the workload command (single line)
-        KAIZEN_RUN_CMD="timeout 600s python3 -m vllm.entrypoints.openai.api_server \
-          --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
-          --max-num-seqs 1 \
-          --max-model-len 128 \
-          --tensor-parallel-size ${TP_SIZE} \
-          --device neuron \
-          --use-v2-block-manager \
-          --override-neuron-config '{}' \
-          --port 8000"
+        # # Build the workload command (single line)
+        # KAIZEN_RUN_CMD="timeout 600s python3 -m vllm.entrypoints.openai.api_server \
+        #   --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+        #   --max-num-seqs 1 \
+        #   --max-model-len 128 \
+        #   --tensor-parallel-size ${TP_SIZE} \
+        #   --device neuron \
+        #   --use-v2-block-manager \
+        #   --override-neuron-config '{}' \
+        #   --port 8000"
+        KAIZEN_RUN_CMD="cd /workspace/vllm && bash -c '
+          export PYTHONUNBUFFERED=1
+          echo \"Starting test...\"
+          python3 examples/offline_inference/neuron.py 2>&1
+          echo \"Test completed, waiting for logs...\"
+          sleep 20'
+          "
 
         echo "▶ Workload command:"
         echo "${KAIZEN_RUN_CMD}"
@@ -105,7 +112,7 @@ phases:
           --command "${KAIZEN_RUN_CMD}" \
           --tail-logs
 
-        echo "✅ Pipeline completed successfully!"
+        echo "Pipeline completed successfully!"
 
 artifacts:
   files:
